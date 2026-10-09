@@ -43,7 +43,8 @@ async function renderTeamsPage() {
 describe('teams page render limit', () => {
   it('preselects new leagues but leaves existing library leagues for an explicit choice', async () => {
     transport.get.mockImplementation(async (path: string) => {
-      if (path === '/teams/all') return { data: teams };
+      // This test only needs the followed team and its leagues.
+      if (path === '/teams/all') return { data: teams.slice(0, 1) };
       if (path === '/followed-teams') return { data: [{ id: 1, externalId: '1000', name: 'Team 000', sport: 'Soccer' }] };
       if (path === '/qualityprofile') return { data: [{ id: 1, name: 'Any' }] };
       if (path === '/followed-teams/1/leagues') return { data: { leagues: [
