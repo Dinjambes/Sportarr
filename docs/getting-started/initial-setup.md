@@ -35,6 +35,8 @@ Go to **Settings > Media Management** and add a root folder. This is where Sport
 
 **Settings > Indexers**. Add your Usenet indexers or torrent trackers. Sportarr supports Newznab and Torznab APIs, so [Prowlarr integration](../integrations/prowlarr.md) works out of the box.
 
+For a local HTTPS indexer with a self-signed certificate, open its advanced settings and turn on **Disable certificate validation**. This works only with a literal address in `10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`. A hostname does not qualify, even if it resolves to one of those addresses. Keep the option off for public indexers. If qBittorrent also connects over HTTPS, its **Settings > Download Clients > qBittorrent > Use SSL > Disable SSL Certificate Validation** option covers `.torrent` links it fetches from the indexer. The indexer option alone does not cover that fetch.
+
 ![Add Indexer](../images/add-indexer.png)
 
 ## 4. Add content

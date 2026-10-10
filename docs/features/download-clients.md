@@ -28,9 +28,9 @@ Each download client has a **Post-Import Mode** controlling how files reach your
 | Copy | Always copy, source untouched |
 | Hardlink | Always hardlink (falls back to copy across filesystems), source untouched no matter what |
 
-If you manage seeding manually and never want Sportarr to move files out of your download folder, set the client's Post-Import Mode to **Hardlink**.
+If you manage seeding manually and never want Sportarr to move files out of your download folder, set the client's Post-Import Mode to **Hardlink**. Auto keeps a torrent's files in place when the client's state is uncertain.
 
-With **Remove Completed Downloads** enabled on a client, a move import finishes by removing the job from the client and deleting the job's leftover folder, including nfo, sample, and archive leftovers, so nothing of the release stays behind in the download directory. With the setting off, Sportarr leaves the client's jobs and folders completely alone.
+With **Remove Completed Downloads** enabled on a client, a move import can remove the completed job and its leftover folder, including nfo, sample, and archive leftovers. Sportarr keeps the job and files if it cannot confirm that removal is safe. With the setting off, Sportarr leaves the client's jobs and folders alone.
 
 ### A file for an event that already has one
 
@@ -40,7 +40,7 @@ Qualities placed in the same profile group have equal rank. The **Propers and Re
 
 A copy that is equal to the file an event already holds is not swapped in. It is listed in Activity with the reason, so you decide whether to import it, ignore it or remove it.
 
-A completed download that fails the rule stays in the queue with the reason and an **Import Anyway** button. A file that appears in a league folder and fails the rule is left where it is and listed in Activity with the reason. **Library Import** also lists it and imports whatever you select. The Remove button on such a row deletes the file too, to the recycle bin when one is set, unless you untick that in the remove dialog. Ignore keeps the file and only stops the scans listing it. When a copy that already sits beside the file it replaces takes over, the replaced file stays on disk untracked. A copy from anywhere else replaces it through the recycle bin.
+A completed download that fails the rule stays in the queue with the reason and an **Import Anyway** button. If several videos could match one event, choose the video in the pending import before importing it. A file that appears in a league folder and fails the rule is left where it is and listed in Activity with the reason. **Library Import** also lists it. A recording held by an indexer file starts unselected and needs **Import anyway** before selection. The Remove button on an Activity row deletes the file too, to the recycle bin when one is set, unless you untick that in the remove dialog. Ignore keeps the file and only stops the scans listing it. When a copy that already sits beside the file it replaces takes over, the replaced file stays on disk untracked. A copy from anywhere else replaces it through the recycle bin.
 
 ## Activity queue
 
