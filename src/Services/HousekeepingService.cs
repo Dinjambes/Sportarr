@@ -9,7 +9,9 @@ namespace Sportarr.Api.Services;
 /// cleanup (Recycle Bin Cleanup days), DVR recording retention, and system
 /// event log pruning. Every chore is failure-isolated - one broken chore
 /// never blocks the others - and each is a no-op when its setting disables
-/// it, so default installs see no behavior change beyond scheduled backups.
+/// it, so default installs see no behavior change beyond scheduled backups
+/// and a one-time pass that stores the custom format score of library files
+/// that never got one.
 /// </summary>
 public class HousekeepingService : BackgroundService
 {
@@ -59,6 +61,7 @@ public class HousekeepingService : BackgroundService
         await PruneDvrRecordingsAsync(db, config, ct);
         await PruneSystemEventsAsync(db, ct);
         await PruneStreamEventsAsync(db, ct);
+        await RescoreLibraryFilesAsync(ct);
     }
 
     private bool _versionChecked;
@@ -378,6 +381,29 @@ public class HousekeepingService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "[Housekeeping] Stream event pruning failed");
+        }
+    }
+
+    /// <summary>
+    /// Give library-imported files stored at a custom format score of 0 the
+    /// score their names earn. Older imports never stored one, so every
+    /// release with a positive score looked like an upgrade over them.
+    /// </summary>
+    private async Task RescoreLibraryFilesAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _services.CreateScope();
+            var rescored = await LibraryFileFormatScores.RescoreUnscoredAsync(
+                scope.ServiceProvider.GetRequiredService<SportarrDbContext>(),
+                scope.ServiceProvider.GetRequiredService<CustomFormatService>(), ct);
+
+            if (rescored > 0)
+                _logger.LogInformation("[Housekeeping] Stored the custom format score of {Count} library file(s)", rescored);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Housekeeping] Library file rescore failed");
         }
     }
 }

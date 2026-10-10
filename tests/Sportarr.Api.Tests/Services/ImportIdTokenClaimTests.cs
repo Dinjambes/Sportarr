@@ -339,6 +339,143 @@ public class ImportUpgradeBehaviourTests : IDisposable
     }
 
     [Fact]
+    public async Task AnImportedFileKeepsTheCustomFormatScoreItsNameEarns()
+    {
+        var (evt, _) = SeedEventWithFile();
+        var format = new CustomFormat
+        {
+            Name = "Better",
+            Specifications = new List<FormatSpecification>
+            {
+                new()
+                {
+                    Name = "Title", Implementation = "ReleaseTitle", Required = true,
+                    Fields = new Dictionary<string, object> { { "value", "Better" } },
+                },
+            },
+        };
+        _db.CustomFormats.Add(format);
+        _db.SaveChanges();
+        _db.QualityProfiles.Add(new QualityProfile
+        {
+            Name = "Default", IsDefault = true,
+            FormatItems = new List<ProfileFormatItem> { new() { FormatId = format.Id, Score = 50 } },
+        });
+        _db.SaveChanges();
+        var copy = Write("NFL - S2025E06 - Better Copy - WEBDL-2160p - sportarr-ev-312923.mkv");
+
+        var result = await _service.ImportFilesAsync(new List<FileImportRequest>
+        {
+            new() { FilePath = copy, EventId = evt.Id },
+        });
+
+        result.Imported.Should().ContainSingle();
+        _db.EventFiles.Single(f => f.EventId == evt.Id).CustomFormatScore.Should().Be(50);
+    }
+
+    [Fact]
+    public async Task ARelinkedFileUsesTheNewEventsFormatScore()
+    {
+        var (evt, _) = SeedEventWithFile();
+        var format = new CustomFormat
+        {
+            Name = "Better",
+            Specifications = new List<FormatSpecification>
+            {
+                new()
+                {
+                    Name = "Title", Implementation = "ReleaseTitle", Required = true,
+                    Fields = new Dictionary<string, object> { { "value", "Better" } },
+                },
+            },
+        };
+        _db.CustomFormats.Add(format);
+        _db.SaveChanges();
+        _db.QualityProfiles.Add(new QualityProfile
+        {
+            Name = "Default", IsDefault = true,
+            FormatItems = new List<ProfileFormatItem> { new() { FormatId = format.Id, Score = 50 } },
+        });
+        var previousOwner = new Event
+        {
+            Title = "Earlier game", Sport = "American Football", Season = "2025",
+            EventDate = new DateTime(2025, 8, 1), LeagueId = evt.LeagueId,
+            ExternalId = "ev-previous-312923", SeasonNumber = 2025, EpisodeNumber = 5,
+            Status = "completed", HasFile = true, Monitored = true,
+        };
+        _db.Events.Add(previousOwner);
+        _db.SaveChanges();
+        var copy = Write("NFL - S2025E06 - Better Copy - WEBDL-2160p - sportarr-ev-312923.mkv");
+        _db.EventFiles.Add(new EventFile
+        {
+            EventId = previousOwner.Id, FilePath = copy, Quality = "WEBDL-2160p", Exists = true,
+            CustomFormatScore = 0,
+        });
+        _db.SaveChanges();
+
+        var result = await _service.ImportFilesAsync(new List<FileImportRequest>
+        {
+            new() { FilePath = copy, EventId = evt.Id },
+        });
+
+        result.Imported.Should().ContainSingle();
+        var relinked = _db.EventFiles.Single(f => f.FilePath == copy);
+        relinked.EventId.Should().Be(evt.Id);
+        relinked.CustomFormatScore.Should().Be(50);
+    }
+
+    [Fact]
+    public async Task ARelinkedGrabbedFileScoresItsReleaseTitle()
+    {
+        var (evt, _) = SeedEventWithFile();
+        var format = new CustomFormat
+        {
+            Name = "Better",
+            Specifications = new List<FormatSpecification>
+            {
+                new()
+                {
+                    Name = "Title", Implementation = "ReleaseTitle", Required = true,
+                    Fields = new Dictionary<string, object> { { "value", "Better" } },
+                },
+            },
+        };
+        _db.CustomFormats.Add(format);
+        _db.SaveChanges();
+        _db.QualityProfiles.Add(new QualityProfile
+        {
+            Name = "Default", IsDefault = true,
+            FormatItems = new List<ProfileFormatItem> { new() { FormatId = format.Id, Score = 50 } },
+        });
+        var previousOwner = new Event
+        {
+            Title = "Earlier game", Sport = "American Football", Season = "2025",
+            EventDate = new DateTime(2025, 8, 1), LeagueId = evt.LeagueId,
+            ExternalId = "ev-previous-312924", SeasonNumber = 2025, EpisodeNumber = 5,
+            Status = "completed", HasFile = true, Monitored = true,
+        };
+        _db.Events.Add(previousOwner);
+        _db.SaveChanges();
+        var copy = Write("NFL - S2025E06 - Plain Copy - WEBDL-2160p - sportarr-ev-312923.mkv");
+        _db.EventFiles.Add(new EventFile
+        {
+            EventId = previousOwner.Id, FilePath = copy, Quality = "WEBDL-2160p", Exists = true,
+            ReleaseTitle = "NFL.2025.Week.6.Better.2160p.WEB-DL", CustomFormatScore = 75,
+        });
+        _db.SaveChanges();
+
+        var result = await _service.ImportFilesAsync(new List<FileImportRequest>
+        {
+            new() { FilePath = copy, EventId = evt.Id },
+        });
+
+        result.Imported.Should().ContainSingle();
+        var relinked = _db.EventFiles.Single(f => f.FilePath == copy);
+        relinked.EventId.Should().Be(evt.Id);
+        relinked.CustomFormatScore.Should().Be(50);
+    }
+
+    [Fact]
     public async Task AReplacementFromOutsideTheLeagueFolderCleansOldSubtitleSidecars()
     {
         var (evt, held) = SeedEventWithFile();

@@ -673,6 +673,8 @@ public class LibraryImportService
                             existingFileRecord.FilePath = destinationPath;
                             existingFileRecord.Size = sourceFileSize;
                             existingFileRecord.Quality = request.Quality ?? _fileParser.BuildQualityString(parsedInfo);
+                            existingFileRecord.CustomFormatScore = await ExistingFormatScoreAsync(
+                                request, existingEvent, existingFileRecord, false);
                             existingFileRecord.PartName = partName;
                             existingFileRecord.PartNumber = partNumber;
                             existingFileRecord.LastVerified = DateTime.UtcNow;
@@ -696,6 +698,8 @@ public class LibraryImportService
                                 existingByDest.EventId = existingEvent.Id;
                                 existingByDest.Size = sourceFileSize;
                                 existingByDest.Quality = request.Quality ?? _fileParser.BuildQualityString(parsedInfo);
+                                existingByDest.CustomFormatScore = await ExistingFormatScoreAsync(
+                                    request, existingEvent, existingByDest, previousOwnerId != existingEvent.Id);
                                 existingByDest.PartName = partName;
                                 existingByDest.PartNumber = partNumber;
                                 existingByDest.LastVerified = DateTime.UtcNow;
@@ -725,6 +729,7 @@ public class LibraryImportService
                                     OriginalTitle = request.OriginalTitle,
                                     Languages = request.Languages ?? new List<string>(),
                                     IndexerFlags = request.IndexerFlags,
+                                    CustomFormatScore = await ImportedFormatScoreAsync(request, existingEvent),
                                     PartName = partName,
                                     PartNumber = partNumber,
                                     Added = DateTime.UtcNow,
@@ -892,6 +897,8 @@ public class LibraryImportService
                         fileAtDestination.EventId = newEvent.Id;
                         fileAtDestination.Size = sourceFileSize;
                         fileAtDestination.Quality = request.Quality ?? _fileParser.BuildQualityString(parsedInfo);
+                        fileAtDestination.CustomFormatScore = await ExistingFormatScoreAsync(
+                            request, newEvent, fileAtDestination, previousOwnerId != newEvent.Id);
                         fileAtDestination.PartName = partName;
                         fileAtDestination.PartNumber = partNumber;
                         fileAtDestination.LastVerified = DateTime.UtcNow;
@@ -920,6 +927,7 @@ public class LibraryImportService
                             OriginalTitle = request.OriginalTitle,
                             Languages = request.Languages ?? new List<string>(),
                             IndexerFlags = request.IndexerFlags,
+                            CustomFormatScore = await ImportedFormatScoreAsync(request, newEvent),
                             PartName = partName,
                             PartNumber = partNumber,
                             Added = DateTime.UtcNow,
@@ -1740,13 +1748,32 @@ public class LibraryImportService
         return RssSyncService.ResolveQualityProfile(evt, _qualityProfiles);
     }
 
+    /// <summary>
+    /// The custom format score a library import stores on its new file, read
+    /// from the name the upgrade decision scored. Left at 0, every release
+    /// with a positive score would look like an upgrade over this file.
+    /// </summary>
+    private async Task<int> ImportedFormatScoreAsync(FileImportRequest request, Event evt) =>
+        await FormatScoreAsync(request.OriginalTitle ?? Path.GetFileNameWithoutExtension(request.FilePath),
+            await QualityProfileAsync(evt));
+
+    private async Task<int> ExistingFormatScoreAsync(
+        FileImportRequest request, Event evt, EventFile file, bool ownerChanged)
+    {
+        if (string.IsNullOrWhiteSpace(file.ReleaseTitle))
+            return await ImportedFormatScoreAsync(request, evt);
+        if (!ownerChanged)
+            return file.CustomFormatScore;
+        return await FormatScoreAsync(file.ReleaseTitle, await QualityProfileAsync(evt));
+    }
+
     private async Task<int> FormatScoreAsync(string title, QualityProfile? profile)
     {
         if (string.IsNullOrEmpty(title) || profile == null) return 0;
         var profileId = profile.Id;
         if (!_formatScoreCache.TryGetValue(profileId, out var cached))
         {
-            var scores = profile.FormatItems?.ToDictionary(fi => fi.FormatId, fi => fi.Score) ?? new Dictionary<int, int>();
+            var scores = CustomFormatService.ProfileScores(profile);
             var formats = scores.Count == 0 ? new List<CustomFormat>() : await _db.CustomFormats.AsNoTracking().ToListAsync();
             cached = (formats, scores);
             _formatScoreCache[profileId] = cached;

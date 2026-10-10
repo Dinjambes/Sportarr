@@ -57,6 +57,9 @@ namespace Sportarr.Api.Migrations
                     b.Property<DateTime>("LastModified")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("LibraryFormatScoresBackfilled")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("LoggingSettings")
                         .IsRequired()
                         .HasColumnType("TEXT");

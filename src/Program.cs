@@ -623,6 +623,15 @@ var app = builder.Build();
 
 await DatabaseInitializer.InitializeAsync(app.Services);
 
+using (var scoreScope = app.Services.CreateScope())
+{
+    var scored = await LibraryFileFormatScores.RescoreUnscoredAsync(
+        scoreScope.ServiceProvider.GetRequiredService<SportarrDbContext>(),
+        scoreScope.ServiceProvider.GetRequiredService<CustomFormatService>());
+    if (scored > 0)
+        app.Logger.LogInformation("Stored custom format scores for {Count} library file(s)", scored);
+}
+
 AgentInstaller.Install(dataPath, isWindowsPlatform);
 
 // Configure middleware pipeline

@@ -39,9 +39,12 @@ internal sealed class PartIdentityIntegrationHarness : IAsyncDisposable
 
     public static async Task<PartIdentityIntegrationHarness> CreateAsync(bool rename = true, bool multipart = true,
         string title = "UFC 9999", string sport = "Fighting", string leagueName = "UFC", bool relational = false,
-        bool writeMetadata = false)
+        bool writeMetadata = false, string? mediaRoot = null)
     {
-        var directory = Path.Combine(Path.GetTempPath(), "sportarr-part-identity-" + Guid.NewGuid().ToString("N"));
+        if (mediaRoot != null && !Path.GetFullPath(mediaRoot).StartsWith("/data/e2e-lib/", StringComparison.Ordinal))
+            throw new InvalidOperationException("The test media root must be under /data/e2e-lib.");
+        var directory = Path.Combine(mediaRoot ?? Path.GetTempPath(),
+            "sportarr-part-identity-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Sportarr:DataPath"] = directory });

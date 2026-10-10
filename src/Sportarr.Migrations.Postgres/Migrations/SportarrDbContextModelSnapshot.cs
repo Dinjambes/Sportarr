@@ -65,6 +65,9 @@ namespace Sportarr.Api.Migrations.Postgres.Migrations
                     b.Property<DateTime>("LastModified")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("LibraryFormatScoresBackfilled")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("LoggingSettings")
                         .IsRequired()
                         .HasColumnType("text");
