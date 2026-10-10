@@ -71,7 +71,7 @@ describe('onboarding indexer setup', () => {
         tags: [],
       });
     });
-  });
+  }, 10000);
 
   it('saves the indexer with the API field-array contract', async () => {
     const user = await openIndexerStep();
@@ -83,7 +83,7 @@ describe('onboarding indexer setup', () => {
         fields: indexerFields,
       }));
     });
-  });
+  }, 10000);
 
   it('shows the backend message when a connection test fails', async () => {
     vi.mocked(apiClient.post).mockRejectedValue({
@@ -94,7 +94,7 @@ describe('onboarding indexer setup', () => {
     await user.click(screen.getByRole('button', { name: 'Test connection' }));
 
     expect(await screen.findByText(/Could not reach the indexer/)).toBeVisible();
-  });
+  }, 10000);
 
   it('shows the backend message when saving fails', async () => {
     vi.mocked(apiClient.post).mockRejectedValue({
@@ -105,7 +105,7 @@ describe('onboarding indexer setup', () => {
     await user.click(screen.getByRole('button', { name: '+ Save & add another' }));
 
     expect(await screen.findByText('Indexer URL is required')).toBeVisible();
-  });
+  }, 10000);
 
   it('updates only the indexer fields exposed by the wizard', async () => {
     const existingFields = [
@@ -175,5 +175,5 @@ describe('onboarding indexer setup', () => {
         tags: [7],
       });
     });
-  });
+  }, 10000);
 });

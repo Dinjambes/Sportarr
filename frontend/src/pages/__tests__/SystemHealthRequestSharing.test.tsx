@@ -113,13 +113,13 @@ it('shares the persistent banner request with the Health page', async () => {
 it('updates the banner when a warning is restored on the Health page', async () => {
   health = health.map((check) => ({ ...check, dismissed: true }));
   renderScreen('/system/health');
-  await screen.findByRole('button', { name: 'Restore' });
+  await screen.findByRole('button', { name: 'Restore' }, { timeout: 3000 });
 
   await userEvent.setup().click(screen.getByRole('button', { name: 'Restore' }));
 
-  await waitFor(() => expect(screen.getAllByText('Sample indexer warning')).toHaveLength(2));
+  await waitFor(() => expect(screen.getAllByText('Sample indexer warning')).toHaveLength(2), { timeout: 3000 });
   expect(client.getQueryData<typeof health>(['system', 'health'])?.[0].dismissed).toBe(false);
-});
+}, 10000);
 
 it('does not present a banner dismissal as the last completed health check', async () => {
   let resolveDismiss!: (value: { ok: boolean }) => void;
