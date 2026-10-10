@@ -424,6 +424,23 @@ app.MapPut("/api/pending-imports/{id:int}/suggestion", async (
     return Results.Ok(import);
 });
 
+app.MapGet("/api/pending-imports/{id:int}/video-candidates", async (
+    int id, SportarrDbContext db, FileImportService fileImportService) =>
+{
+    var import = await db.PendingImports.FindAsync(id);
+    if (import is null) return Results.NotFound();
+    if (import.Status != PendingImportStatus.Pending)
+        return Results.BadRequest(new { error = "This import is no longer pending." });
+    try
+    {
+        return Results.Ok(fileImportService.ListVideoCandidatesAtPath(import.FilePath));
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
 app.MapPost("/api/pending-imports/{id:int}/accept", async (
     int id,
     HttpRequest req,
@@ -441,6 +458,7 @@ app.MapPost("/api/pending-imports/{id:int}/accept", async (
     Sportarr.Api.Endpoints.EventFileEditorEndpoints.EventFileEditRequest? overrides = null;
     // Auto unless the import screen asked for something specific.
     var importMode = PostImportMode.Auto;
+    string? selectedRelativePath = null;
     if (req.ContentLength is null or > 0)
     {
         try
@@ -461,6 +479,13 @@ app.MapPost("/api/pending-imports/{id:int}/accept", async (
                 modeProp.ValueKind == System.Text.Json.JsonValueKind.String)
             {
                 importMode = ParseImportMode(modeProp.GetString());
+            }
+
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("selectedRelativePath", out var pathProp) &&
+                pathProp.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                selectedRelativePath = pathProp.GetString();
             }
         }
         catch
@@ -590,7 +615,8 @@ app.MapPost("/api/pending-imports/{id:int}/accept", async (
             // Import the download using FileImportService
             // Pass the stored FilePath directly since we already have it from the pending import
             // This avoids re-querying the download client which may return incomplete path info
-            var imported = await fileImportService.ImportDownloadAsync(tempQueueItem, import.FilePath, importMode);
+            var imported = await fileImportService.ImportDownloadAsync(tempQueueItem, import.FilePath, importMode,
+                selectedRelativePath: selectedRelativePath);
             if (imported == null)
                 throw new InvalidOperationException(tempQueueItem.ErrorMessage ?? "The file was not imported.");
             importedHistory = imported;

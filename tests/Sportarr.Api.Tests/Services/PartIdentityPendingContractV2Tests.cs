@@ -16,6 +16,106 @@ namespace Sportarr.Api.Tests.Services;
 public class PartIdentityPendingContractV2Tests
 {
     [Theory]
+    [InlineData("copy", true)]
+    [InlineData("auto", false)]
+    public async Task PendingFolderImport_ListsVideosAndImportsOnlyTheChosenRace(
+        string importMode, bool copyFiles)
+    {
+        const string mediaRoot = "/data/e2e-lib/issue330";
+        Directory.CreateDirectory(mediaRoot);
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(
+            rename: false, multipart: false, title: "South Point 400", sport: "Motorsport",
+            leagueName: "NASCAR Cup Series", mediaRoot: mediaRoot);
+        rig.Settings.CopyFiles = copyFiles;
+        await rig.Db.SaveChangesAsync();
+        var directory = NewDirectory(mediaRoot);
+        try
+        {
+            var race = Path.Combine(directory, "South.Point.400.Race.720p.mkv");
+            var qualifying = Path.Combine(directory, "South.Point.400.Qualifying.720p.mkv");
+            var raceBytes = Enumerable.Repeat((byte)'r', 4096).ToArray();
+            var qualifyingBytes = Enumerable.Repeat((byte)'q', 4096).ToArray();
+            await File.WriteAllBytesAsync(race, raceBytes);
+            await File.WriteAllBytesAsync(qualifying, qualifyingBytes);
+            var pending = new PendingImport
+            {
+                DownloadId = "nascar-weekend-pack", Title = "NCS.2026.Round31.Weekend.Pack",
+                FilePath = directory, Size = 8192, Quality = "WEBDL-720p",
+                Protocol = "Torrent", TorrentInfoHash = new string('a', 40),
+                SuggestedEventId = rig.Event.Id, Status = PendingImportStatus.Pending
+            };
+            rig.Db.PendingImports.Add(pending);
+            await rig.Db.SaveChangesAsync();
+
+            await using var app = await CreatePendingHost(rig);
+            using var client = app.GetTestClient();
+            using var candidates = await client.GetAsync($"/api/pending-imports/{pending.Id}/video-candidates");
+            candidates.IsSuccessStatusCode.Should().BeTrue(await candidates.Content.ReadAsStringAsync());
+            var listed = await candidates.Content.ReadFromJsonAsync<List<ImportVideoCandidate>>();
+            listed.Should().NotBeNull();
+            listed!.Select(file => file.RelativePath).Should().BeEquivalentTo(new[]
+            {
+                "South.Point.400.Race.720p.mkv", "South.Point.400.Qualifying.720p.mkv"
+            });
+
+            using var response = await client.PostAsJsonAsync($"/api/pending-imports/{pending.Id}/accept",
+                new { importMode, selectedRelativePath = "South.Point.400.Race.720p.mkv" });
+            response.IsSuccessStatusCode.Should().BeTrue(await response.Content.ReadAsStringAsync());
+            pending.Status.Should().Be(PendingImportStatus.Completed);
+            var imported = await rig.Db.EventFiles.SingleAsync();
+            (await File.ReadAllBytesAsync(imported.FilePath)).Should().Equal(raceBytes);
+            (await File.ReadAllBytesAsync(race)).Should().Equal(raceBytes);
+            (await File.ReadAllBytesAsync(qualifying)).Should().Equal(qualifyingBytes);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Theory]
+    [InlineData(null, "copy")]
+    [InlineData("../other-file.mkv", "copy")]
+    [InlineData("..\\other-file.mkv", "copy")]
+    [InlineData("/etc/passwd", "copy")]
+    [InlineData("missing.mkv", "copy")]
+    [InlineData("South.Point.400.Race.720p.mkv", "move")]
+    public async Task PendingFolderImport_RejectsUnsafeChoicesWithoutMovingSiblings(
+        string? selectedRelativePath, string importMode)
+    {
+        const string mediaRoot = "/data/e2e-lib/issue330";
+        Directory.CreateDirectory(mediaRoot);
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(
+            rename: false, multipart: false, title: "South Point 400", sport: "Motorsport",
+            leagueName: "NASCAR Cup Series", mediaRoot: mediaRoot);
+        var directory = NewDirectory(mediaRoot);
+        try
+        {
+            var race = Path.Combine(directory, "South.Point.400.Race.720p.mkv");
+            var qualifying = Path.Combine(directory, "South.Point.400.Qualifying.720p.mkv");
+            await File.WriteAllBytesAsync(race, Enumerable.Repeat((byte)'r', 4096).ToArray());
+            await File.WriteAllBytesAsync(qualifying, Enumerable.Repeat((byte)'q', 4096).ToArray());
+            var pending = new PendingImport
+            {
+                DownloadId = "nascar-weekend-pack", Title = "NCS.2026.Round31.Weekend.Pack",
+                FilePath = directory, Size = 8192, Quality = "WEBDL-720p",
+                Protocol = "Torrent", TorrentInfoHash = new string('a', 40),
+                SuggestedEventId = rig.Event.Id, Status = PendingImportStatus.Pending
+            };
+            rig.Db.PendingImports.Add(pending);
+            await rig.Db.SaveChangesAsync();
+
+            await using var app = await CreatePendingHost(rig);
+            using var client = app.GetTestClient();
+            using var response = await client.PostAsJsonAsync($"/api/pending-imports/{pending.Id}/accept",
+                new { importMode, selectedRelativePath });
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            pending.Status.Should().Be(PendingImportStatus.Pending);
+            File.Exists(race).Should().BeTrue();
+            File.Exists(qualifying).Should().BeTrue();
+            (await rig.Db.EventFiles.CountAsync()).Should().Be(0);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task RefusedPendingImport_CannotCompleteOrEditSurvivingFile(bool fullCollision)

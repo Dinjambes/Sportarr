@@ -106,6 +106,12 @@ interface PendingImport {
   suggestionConfidence: number;
   detected: string;
   protocol?: string;
+  torrentInfoHash?: string;
+}
+
+interface VideoCandidate {
+  relativePath: string;
+  size: number;
 }
 
 interface Props {
@@ -190,6 +196,31 @@ export default function ManualImportModal({ pendingImport, onClose, onSuccess, i
   const [importMode, setImportMode] = useState<'auto' | 'copy' | 'hardlink' | 'move'>('auto');
   // Shown beside Auto so the choice is not a guess.
   const [autoModeLabel, setAutoModeLabel] = useState('follow media management settings');
+  const [videoCandidates, setVideoCandidates] = useState<VideoCandidate[]>([]);
+  const [videoCandidatesLoading, setVideoCandidatesLoading] = useState(true);
+  const [videoCandidatesError, setVideoCandidatesError] = useState(false);
+  const [selectedRelativePath, setSelectedRelativePath] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setVideoCandidatesLoading(true);
+    setVideoCandidatesError(false);
+    setVideoCandidates([]);
+    setSelectedRelativePath('');
+    (async () => {
+      try {
+        const response = await apiGet(`/api/pending-imports/${pendingImport.id}/video-candidates`);
+        if (!response.ok) throw new Error('Video list unavailable');
+        const files = await response.json() as VideoCandidate[];
+        if (!cancelled) setVideoCandidates(files);
+      } catch {
+        if (!cancelled) setVideoCandidatesError(true);
+      } finally {
+        if (!cancelled) setVideoCandidatesLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pendingImport.id]);
 
   // Data state
   useEffect(() => {
@@ -451,6 +482,7 @@ export default function ManualImportModal({ pendingImport, onClose, onSuccess, i
       const acceptBody: Record<string, unknown> = {};
       if (Object.keys(metadataOverrides).length > 0) acceptBody.metadataOverrides = metadataOverrides;
       if (importMode !== 'auto') acceptBody.importMode = importMode;
+      if (selectedRelativePath) acceptBody.selectedRelativePath = selectedRelativePath;
       const acceptResponse = await apiPost(`/api/pending-imports/${pendingImport.id}/accept`, acceptBody);
 
       if (!acceptResponse.ok) {
@@ -557,6 +589,7 @@ export default function ManualImportModal({ pendingImport, onClose, onSuccess, i
             <h3 className="text-xl font-bold text-white">Manual Import</h3>
             <p className="text-sm text-gray-400 mt-1">Map download to an event in your library</p>
           </div>
+
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-white transition-colors"
@@ -599,6 +632,39 @@ export default function ManualImportModal({ pendingImport, onClose, onSuccess, i
               </div>
             </div>
           </div>
+
+          {videoCandidates.length > 1 && (
+            <div role="radiogroup" aria-label="Video file" className="rounded-lg border border-gray-700 bg-black/30 p-4">
+              <p className="mb-2 text-sm font-medium text-white">Video file</p>
+              <div className="max-h-52 space-y-2 overflow-y-auto overscroll-contain">
+                {videoCandidates.map(file => (
+                  <label key={file.relativePath} className={`flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border p-3 ${
+                    selectedRelativePath === file.relativePath
+                      ? 'border-red-500 bg-red-900/20'
+                      : 'border-gray-700 bg-gray-800/50'
+                  }`}>
+                    <input
+                      type="radio"
+                      name={`manual-import-video-${pendingImport.id}`}
+                      value={file.relativePath}
+                      checked={selectedRelativePath === file.relativePath}
+                      onChange={() => setSelectedRelativePath(file.relativePath)}
+                      disabled={isLoading}
+                      className="mt-0.5 accent-red-600 focus:ring-red-600"
+                    />
+                    <span className="min-w-0 break-all text-sm text-white">
+                      {file.relativePath}
+                      <span className="ml-2 whitespace-nowrap text-gray-400">{formatBytes(file.size)}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-gray-400">Only this file imports. Other files stay in the download, and this pending entry closes.</p>
+            </div>
+          )}
+          {videoCandidatesError && (
+            <p className="text-sm text-red-400">Could not list the video files. Import will try automatic selection.</p>
+          )}
 
           {/* AI Suggestions Section */}
           {(suggestedEvent || allMatches.length > 0) && showAISuggestions && (
@@ -1029,7 +1095,8 @@ export default function ManualImportModal({ pendingImport, onClose, onSuccess, i
               title="Hardlink/Copy and Copy leave the original file where it is, so a seeding torrent keeps working"
             >
               <option value="auto">Auto ({autoModeLabel})</option>
-              <option value="move">Move</option>
+              <option value="move" disabled={videoCandidates.length > 1 &&
+                (pendingImport.protocol?.toLowerCase() === 'torrent' || !!pendingImport.torrentInfoHash)}>Move</option>
               <option value="hardlink">Hardlink/Copy</option>
               <option value="copy">Copy</option>
             </select>
@@ -1051,7 +1118,8 @@ export default function ManualImportModal({ pendingImport, onClose, onSuccess, i
           </button>
           <button
             onClick={handleAccept}
-            disabled={isLoading || !selectedEventId}
+            disabled={isLoading || !selectedEventId || videoCandidatesLoading ||
+              (videoCandidates.length > 1 && !selectedRelativePath)}
             className="px-4 sm:px-6 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium"
           >
             {isLoading ? (

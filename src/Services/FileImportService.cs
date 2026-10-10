@@ -173,6 +173,11 @@ public class FileImportService : IFileImportService
     public async Task<IReadOnlyList<ImportVideoCandidate>> ListVideoCandidatesAsync(DownloadQueueItem download)
     {
         var path = await GetDownloadPathAsync(download, allowSavedPath: true);
+        return ListVideoCandidatesAtPath(path);
+    }
+
+    public IReadOnlyList<ImportVideoCandidate> ListVideoCandidatesAtPath(string path)
+    {
         var root = Directory.Exists(path) ? path : Path.GetDirectoryName(path) ?? path;
         return FindVideoFiles(path)
             .Select(file => new ImportVideoCandidate(Path.GetRelativePath(root, file), GetFileSizeResolvingSymlinks(file)))
@@ -401,6 +406,10 @@ public class FileImportService : IFileImportService
 
             // Find video files
             var videoFiles = FindVideoFiles(downloadPath);
+            var partialSelection = selectedRelativePath != null && videoFiles.Count > 1;
+            if (partialSelection && manualImportMode == PostImportMode.Move &&
+                DownloadClientService.IsTorrentDownload(download))
+                throw new InvalidOperationException("A selected file from a torrent cannot be moved while other files remain in the download.");
 
             _logger.LogDebug("Found {Count} video file(s) in: {Path}", videoFiles.Count, downloadPath);
 
@@ -823,6 +832,9 @@ public class FileImportService : IFileImportService
                     settings.CopyFiles,
                     IsSymbolicLink(sourceFile));
             }
+            if (partialSelection && isTorrentDownload && !plan.PreserveSource)
+                plan = new TransferPlan(TransferAction.Copy, PreserveSource: true,
+                    "selected member of a multi-video torrent - source must stay for the remaining files");
             _logger.LogInformation("[Import] Transfer plan: {Action} (preserve source: {Preserve}) - {Reason}",
                 plan.Action, plan.PreserveSource, plan.Reason);
 
@@ -1030,7 +1042,8 @@ public class FileImportService : IFileImportService
             // POST-IMPORT CATEGORY: Change torrent category after successful import.
             // This allows users to move imported torrents to a different category for automated management
             // (e.g., move to "imported" category which uses different storage tier or seeding rules).
-            var packCoverageComplete = !packDirectory || await PackImportJobScope.HasCompleteCoverageAsync(_db, download, config);
+            var packCoverageComplete = !partialSelection &&
+                (!packDirectory || await PackImportJobScope.HasCompleteCoverageAsync(_db, download, config));
             if (packCoverageComplete) await ApplyPostImportCategoryAsync(download);
 
             // NOTIFICATIONS: Send notifications (Discord, Telegram, Plex, Jellyfin, Emby, etc.) for the import.
