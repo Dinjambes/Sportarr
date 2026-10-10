@@ -959,32 +959,8 @@ public class RssSyncService : BackgroundService
         // filter let two releases for one missing event ping-pong and re-grab on every RSS
         // cycle (the duplicate-download loop indexers flag). "Superseded" means the file
         // was replaced — it must NOT erase the memory that we already fetched this URL.
-        GrabHistory? priorGrab = null;
-        if (!string.IsNullOrEmpty(release.TorrentInfoHash))
-        {
-            priorGrab = await db.GrabHistory
-                .Where(g => g.EventId == evt.Id && g.TorrentInfoHash == release.TorrentInfoHash)
-                .OrderByDescending(g => g.LastRegrabAttempt ?? g.GrabbedAt)
-                .FirstOrDefaultAsync(cancellationToken);
-        }
-        if (priorGrab == null && !string.IsNullOrEmpty(release.Guid))
-        {
-            priorGrab = await db.GrabHistory
-                .Where(g => g.EventId == evt.Id && g.Guid == release.Guid)
-                .OrderByDescending(g => g.LastRegrabAttempt ?? g.GrabbedAt)
-                .FirstOrDefaultAsync(cancellationToken);
-        }
-        // Usenet newznab feeds sometimes omit <guid> (NewznabClient leaves Guid=""), and
-        // Usenet releases carry no InfoHash — so neither key above can dedup them. Fall back
-        // to the actual fetch URL, which is always present and uniquely identifies the exact
-        // .nzb we would otherwise re-download from the indexer.
-        if (priorGrab == null && !string.IsNullOrEmpty(release.DownloadUrl))
-        {
-            priorGrab = await db.GrabHistory
-                .Where(g => g.EventId == evt.Id && g.DownloadUrl == release.DownloadUrl)
-                .OrderByDescending(g => g.LastRegrabAttempt ?? g.GrabbedAt)
-                .FirstOrDefaultAsync(cancellationToken);
-        }
+        var priorGrab = await GrabHistoryReleaseIdentity.LoadPriorAsync(
+            db, evt.Id, release, cancellationToken);
 
         // Decide whether re-fetching this exact release is churn. The decision is a pure
         // function of the prior grab's state (imported?, attempt count, last-attempt age),
@@ -994,7 +970,8 @@ public class RssSyncService : BackgroundService
         if (priorGrab != null)
         {
             var now = DateTime.UtcNow;
-            switch (GrabHistoryChurnGuard.Evaluate(priorGrab, now))
+            switch (GrabHistoryChurnGuard.Evaluate(
+                priorGrab.History, now, priorGrab.RegrabCount))
             {
                 case GrabHistoryChurnGuard.Decision.BlockCapReached:
                     return (false,
@@ -1002,7 +979,7 @@ public class RssSyncService : BackgroundService
                         releasePart);
 
                 case GrabHistoryChurnGuard.Decision.BlockCooldown:
-                    var sinceLast = now - (priorGrab.LastRegrabAttempt ?? priorGrab.GrabbedAt);
+                    var sinceLast = now - (priorGrab.History.LastRegrabAttempt ?? priorGrab.History.GrabbedAt);
                     return (false,
                         $"Anti-churn: grabbed this exact release {sinceLast.TotalMinutes:F0}m ago, within the {GrabHistoryChurnGuard.RegrabCooldownHours}h cooldown",
                         releasePart);
@@ -1010,12 +987,12 @@ public class RssSyncService : BackgroundService
                 case GrabHistoryChurnGuard.Decision.AllowControlledRetry:
                     // Cooldown elapsed and under the cap: allow ONE controlled retry,
                     // recording it so the cooldown and cap advance for next time.
-                    priorGrab.RegrabCount += 1;
-                    priorGrab.LastRegrabAttempt = now;
+                    priorGrab.History.RegrabCount = priorGrab.RegrabCount + 1;
+                    priorGrab.History.LastRegrabAttempt = now;
                     await db.SaveChangesAsync(cancellationToken);
                     _logger.LogInformation(
                         "[RSS Sync] Controlled re-grab {Count}/{Max} of '{Title}' for event {EventId} after {Cooldown}h cooldown",
-                        priorGrab.RegrabCount, GrabHistoryChurnGuard.MaxAutomaticRegrabs, release.Title, evt.Id, GrabHistoryChurnGuard.RegrabCooldownHours);
+                        priorGrab.History.RegrabCount, GrabHistoryChurnGuard.MaxAutomaticRegrabs, release.Title, evt.Id, GrabHistoryChurnGuard.RegrabCooldownHours);
                     break;
 
                 // Decision.Allow: prior grab imported (or none) — fall through to normal flow.
@@ -1408,12 +1385,12 @@ public class RssSyncService : BackgroundService
         // grab and the guard reads only the most recent one. Without this the
         // new row reset the count to zero every time, so the cap never applied
         // and the same release went to the download client every 6 hours.
-        var priorGrabOfRelease = await db.GrabHistory
-            .Where(g => g.EventId == evt.Id && g.DownloadUrl == release.DownloadUrl)
-            .OrderByDescending(g => g.LastRegrabAttempt ?? g.GrabbedAt)
-            .FirstOrDefaultAsync(cancellationToken);
-        var carriedRegrabCount = priorGrabOfRelease is { WasImported: false } ? priorGrabOfRelease.RegrabCount : 0;
-        var carriedLastRegrabAttempt = priorGrabOfRelease is { WasImported: false } ? priorGrabOfRelease.LastRegrabAttempt : null;
+        var priorGrabOfRelease = await GrabHistoryReleaseIdentity.LoadPriorAsync(
+            db, evt.Id, release, cancellationToken);
+        var carriedRegrabCount = priorGrabOfRelease is { History.WasImported: false }
+            ? priorGrabOfRelease.RegrabCount : 0;
+        var carriedLastRegrabAttempt = priorGrabOfRelease is { History.WasImported: false }
+            ? priorGrabOfRelease.History.LastRegrabAttempt : null;
 
         var grabHistory = new GrabHistory
         {

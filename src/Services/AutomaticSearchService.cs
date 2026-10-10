@@ -1056,21 +1056,8 @@ public class AutomaticSearchService : IAutomaticSearchService
                     .Where(g => g.EventId == eventId)
                     .ToListAsync();
 
-                // Title and indexer are the last resort on purpose. Some
-                // indexers mint a fresh guid and download url per query, so the
-                // identifier match alone found nothing and the guard waved the
-                // same release through on every pass.
-                GrabHistory? FindPriorGrab(ReleaseSearchResult r) =>
-                    eventGrabs
-                        .Where(g =>
-                            (!string.IsNullOrEmpty(r.TorrentInfoHash) && g.TorrentInfoHash == r.TorrentInfoHash) ||
-                            (!string.IsNullOrEmpty(r.Guid) && g.Guid == r.Guid) ||
-                            (!string.IsNullOrEmpty(r.DownloadUrl) && g.DownloadUrl == r.DownloadUrl) ||
-                            (!string.IsNullOrEmpty(r.Title)
-                                && string.Equals(g.Title, r.Title, StringComparison.OrdinalIgnoreCase)
-                                && string.Equals(g.Indexer, r.Indexer, StringComparison.OrdinalIgnoreCase)))
-                        .OrderByDescending(g => g.LastRegrabAttempt ?? g.GrabbedAt)
-                        .FirstOrDefault();
+                GrabHistoryReleaseIdentity.PriorGrab? FindPriorGrab(ReleaseSearchResult r) =>
+                    GrabHistoryReleaseIdentity.FindPrior(eventGrabs, r);
 
                 if (eventGrabs.Count > 0)
                 {
@@ -1079,7 +1066,9 @@ public class AutomaticSearchService : IAutomaticSearchService
                     matchedReleases = matchedReleases
                         .Where(r =>
                         {
-                            var decision = GrabHistoryChurnGuard.Evaluate(FindPriorGrab(r), nowUtc);
+                            var prior = FindPriorGrab(r);
+                            var decision = GrabHistoryChurnGuard.Evaluate(
+                                prior?.History, nowUtc, prior?.RegrabCount);
                             return decision is GrabHistoryChurnGuard.Decision.Allow
                                 or GrabHistoryChurnGuard.Decision.AllowControlledRetry;
                         })
@@ -1646,17 +1635,8 @@ public class AutomaticSearchService : IAutomaticSearchService
             DateTime? lastRegrabAttempt = null;
             if (!isManualSearch)
             {
-                var priorGrabOfSelected = eventGrabs
-                    .Where(g =>
-                        (!string.IsNullOrEmpty(bestRelease.TorrentInfoHash) && g.TorrentInfoHash == bestRelease.TorrentInfoHash) ||
-                        (!string.IsNullOrEmpty(bestRelease.Guid) && g.Guid == bestRelease.Guid) ||
-                        (!string.IsNullOrEmpty(bestRelease.DownloadUrl) && g.DownloadUrl == bestRelease.DownloadUrl) ||
-                        (!string.IsNullOrEmpty(bestRelease.Title)
-                            && string.Equals(g.Title, bestRelease.Title, StringComparison.OrdinalIgnoreCase)
-                            && string.Equals(g.Indexer, bestRelease.Indexer, StringComparison.OrdinalIgnoreCase)))
-                    .OrderByDescending(g => g.LastRegrabAttempt ?? g.GrabbedAt)
-                    .FirstOrDefault();
-                if (priorGrabOfSelected != null && !priorGrabOfSelected.WasImported)
+                var priorGrabOfSelected = GrabHistoryReleaseIdentity.FindPrior(eventGrabs, bestRelease);
+                if (priorGrabOfSelected != null && !priorGrabOfSelected.History.WasImported)
                 {
                     regrabCount = priorGrabOfSelected.RegrabCount + 1;
                     lastRegrabAttempt = DateTime.UtcNow;
