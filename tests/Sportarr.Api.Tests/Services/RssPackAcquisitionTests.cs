@@ -24,6 +24,7 @@ public class RssPackAcquisitionTests(Xunit.Abstractions.ITestOutputHelper output
     [InlineData("F1.2026.Round10.Race.1080p", false, null, null, false)]
     [InlineData("F1.2026.Round10.Qualifying.1080p", false, null, null, false)]
     [InlineData("NFL.2026.Week10.Alpha.vs.Beta", false, null, null, false)]
+    [InlineData("NFL 2026-2027 / Week 04 / 04.10.2026 / Miami Dolphins @ Minnesota Vikings [Football, WEB-DL HD/720p]", false, null, null, false)]
     [InlineData("NFL.2026.Week10.Pack", false, null, null, true)]
     [InlineData("NFL.2026.Week10.Pack", false, null, "ev-9900301", false)]
     [InlineData("unknown", false, "lg-9900300", null, true)]
@@ -40,6 +41,63 @@ public class RssPackAcquisitionTests(Xunit.Abstractions.ITestOutputHelper output
         const string title = "UFC.9999.Main.Card.COMPLETE.BLURAY";
         Assert.Equal(Sportarr.Api.Helpers.ReleaseType.Pack, Sportarr.Api.Helpers.ReleaseTypeDetector.Detect(title));
         Assert.False(PackImportBoundary.IsPackRelease(title));
+    }
+
+    [Fact]
+    public async Task NamedAtMatchupImportsAsOneEvent()
+    {
+        const string title = "NFL 2026-2027 / Week 04 / 04.10.2026 / Miami Dolphins @ Minnesota Vikings [Football, WEB-DL HD/720p]";
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(
+            title: "Miami Dolphins vs Minnesota Vikings", sport: "American Football",
+            leagueName: "NFL", mediaRoot: "/data/e2e-lib/issue331");
+        rig.Event.ExternalId = "ev-1969755";
+        rig.Event.HomeTeamName = "Minnesota Vikings";
+        rig.Event.AwayTeamName = "Miami Dolphins";
+        await rig.Db.SaveChangesAsync();
+
+        var isPack = PackImportBoundary.IsPackRelease(title);
+        Assert.False(isPack);
+        var imported = await rig.ImportAsync(title,
+            "NFL 2026-10-04-Week 04_MIA@MIN_1080p_NBC {sportarr-ev-1969755}.mkv", isPack: isPack);
+
+        Assert.Equal(rig.Event.Id, imported.EventId);
+        Assert.StartsWith("/data/e2e-lib/issue331/", imported.FilePath, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RssNamedAtMatchupQueuesOneEvent()
+    {
+        const string title = "NFL.2026.Week.04.Miami.Dolphins.@.Minnesota.Vikings.720p.WEB-DL.H264-Fixture";
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(
+            title: "Miami Dolphins vs Minnesota Vikings", sport: "American Football",
+            leagueName: "NFL", relational: true, mediaRoot: "/data/e2e-lib/issue331");
+        rig.Event.ExternalId = "ev-1969755";
+        rig.Event.HomeTeamName = "Minnesota Vikings";
+        rig.Event.AwayTeamName = "Miami Dolphins";
+        rig.Event.EventDate = new DateTime(2026, 10, 4, 17, 0, 0, DateTimeKind.Utc);
+        rig.Event.Season = "2026";
+        rig.Event.SeasonNumber = 2026;
+        var indexer = await rig.Db.Indexers.SingleAsync();
+        indexer.EnableRss = true;
+        indexer.ApiPath = "";
+        await rig.Db.SaveChangesAsync();
+        var published = DateTime.UtcNow.AddHours(-1);
+        XNamespace ns = "http://www.newznab.com/DTD/2010/feeds/attributes/";
+        rig.Transport.RssResponse = new XDocument(new XElement("rss", new XAttribute("version", "2.0"),
+            new XElement("channel", new XElement("item", new XElement("title", title),
+                new XElement("guid", "rss-at-matchup"), new XElement("pubDate", published.ToString("R")),
+                new XElement("enclosure", new XAttribute("url", "http://part-source.invalid/at-matchup.nzb"),
+                    new XAttribute("length", 4_000_000_000L), new XAttribute("type", "application/x-nzb")),
+                new XElement(ns + "attr", new XAttribute("name", "size"),
+                    new XAttribute("value", 4_000_000_000L)))))).ToString();
+
+        await rig.Services.GetRequiredService<RssSyncService>().SyncNowAsync(CancellationToken.None);
+
+        Assert.Equal(1, rig.Transport.ClientAdds);
+        var queued = await rig.Db.DownloadQueue.SingleAsync();
+        Assert.False(queued.IsPack);
+        Assert.Equal(rig.Event.Id, queued.EventId);
+        Assert.Empty(rig.Transport.UnexpectedRequests);
     }
 
     [Theory]
