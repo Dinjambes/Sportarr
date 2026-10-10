@@ -290,6 +290,17 @@ public class DownloadClientService : IDownloadClientService
         };
     }
 
+    internal static bool IsTorrentDownload(DownloadQueueItem download)
+    {
+        // Queue rows can lack a protocol, so use the saved client type first.
+        if (download.DownloadClient is { } client)
+            return !GetClientTypesForProtocol("Usenet").Contains(client.Type);
+
+        // An unloaded client with an ID cannot prove that moving its source is safe.
+        return download.DownloadClientId.HasValue ||
+            string.Equals(download.Protocol, "Torrent", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// Resolves an indexer's explicitly assigned download client against the
     /// clients eligible for this grab (already filtered to enabled + protocol).

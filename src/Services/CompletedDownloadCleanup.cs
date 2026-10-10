@@ -28,36 +28,14 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
         // differently for each client (e.g., remove for Usenet, preserve for seeding torrents)
         if (download.DownloadClient?.RemoveCompletedDownloads == true)
         {
-            // For torrents with indexer seed settings, check if seeding goals are met before removal.
-            // Torrents seed until ratio/time limits are reached.
-            if (download.Protocol == "Torrent" && db != null)
-            {
-                var indexer = download.IndexerId != null
-                    ? await db.Indexers.FindAsync(download.IndexerId)
-                    : !string.IsNullOrEmpty(download.Indexer)
-                        ? await db.Indexers.FirstOrDefaultAsync(i => i.Name == download.Indexer)
-                        : null;
-
-                if (indexer != null && (indexer.SeedRatio.HasValue || indexer.SeedTime.HasValue))
-                {
-                    var status = await downloadClientService.GetDownloadStatusAsync(
-                        download.DownloadClient, download.DownloadId, download.GrabCategory);
-
-                    if (status != null && !HasReachedSeedLimit(status, indexer))
-                    {
-                        logger.LogInformation(
-                            "[Enhanced Download Monitor] Torrent still seeding, skipping removal: {Title} " +
-                            "(Ratio: {Ratio:F2}/{Target}, Time: {Time})",
-                            download.Title,
-                            status.Ratio ?? 0,
-                            indexer.SeedRatio?.ToString("F1") ?? "N/A",
-                            indexer.SeedTime.HasValue ? $"{indexer.SeedTime}min" : "N/A");
-
-                        // Keep the imported row for the next monitor check.
-                        return;
-                    }
-                }
-            }
+            var isTorrentDownload = DownloadClientService.IsTorrentDownload(download);
+            // Torrent imports may move the job to another category before cleanup.
+            var statusCategory = isTorrentDownload && !string.IsNullOrWhiteSpace(download.DownloadClient.PostImportCategory)
+                ? download.DownloadClient.PostImportCategory
+                : download.GrabCategory;
+            if (isTorrentDownload &&
+                !await CanRemoveTorrentAsync(download, downloadClientService, db, statusCategory))
+                return;
 
             // Ask the client where the job landed BEFORE removing it. Once
             // the job is gone from history the path is gone with it, and
@@ -65,8 +43,10 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
             string? completedFolder = null;
             try
             {
-                var statusForPath = await downloadClientService.GetDownloadStatusAsync(
-                    download.DownloadClient, download.DownloadId, download.GrabCategory);
+                var statusForPath = isTorrentDownload
+                    ? await GetTorrentStatusForCleanupAsync(download, downloadClientService, statusCategory)
+                    : await downloadClientService.GetDownloadStatusAsync(
+                        download.DownloadClient, download.DownloadId, statusCategory);
                 completedFolder = statusForPath?.SavePath;
 
                 // The client reports its own view of the path. Behind a
@@ -143,6 +123,73 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
         }
     }
 
+    private async Task<bool> CanRemoveTorrentAsync(
+        DownloadQueueItem download, DownloadClientService downloadClientService, SportarrDbContext? db, string? statusCategory)
+    {
+        try
+        {
+            if (db == null)
+            {
+                logger.LogWarning("[Enhanced Download Monitor] Indexer seed settings unavailable, skipping torrent removal for {Title}", download.Title);
+                return false;
+            }
+
+            var indexer = download.IndexerId != null
+                ? await db.Indexers.FindAsync(download.IndexerId)
+                : !string.IsNullOrEmpty(download.Indexer)
+                    ? await db.Indexers.FirstOrDefaultAsync(i => i.Name == download.Indexer)
+                    : null;
+
+            if (indexer == null)
+            {
+                logger.LogWarning("[Enhanced Download Monitor] Indexer unavailable, skipping torrent removal for {Title}", download.Title);
+                return false;
+            }
+
+            if (!HasConfiguredSeedGoal(indexer, download.IsPack))
+            {
+                logger.LogInformation("[Enhanced Download Monitor] No indexer seed goal is configured, leaving torrent in client: {Title}", download.Title);
+                return false;
+            }
+
+            var status = await GetTorrentStatusForCleanupAsync(download, downloadClientService, statusCategory);
+            if (status == null)
+            {
+                logger.LogWarning("[Enhanced Download Monitor] Torrent status unavailable, skipping automatic removal for {Title}", download.Title);
+                return false;
+            }
+
+            if (HasReachedSeedLimit(status, indexer, download.IsPack)) return true;
+
+            logger.LogInformation(
+                "[Enhanced Download Monitor] Torrent still seeding, skipping removal: {Title} " +
+                "(Ratio: {Ratio:F2}/{Target}, Time: {Time})",
+                download.Title,
+                status.Ratio ?? 0,
+                indexer.SeedRatio?.ToString("F1") ?? "N/A",
+                EffectiveSeedTime(indexer, download.IsPack) is { } seedTime ? $"{seedTime}min" : "N/A");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[Enhanced Download Monitor] Could not verify torrent seed goal, skipping removal for {Title}", download.Title);
+            return false;
+        }
+    }
+
+    private static async Task<DownloadClientStatus?> GetTorrentStatusForCleanupAsync(
+        DownloadQueueItem download, DownloadClientService downloadClientService, string? preferredCategory)
+    {
+        var status = await downloadClientService.GetDownloadStatusAsync(
+            download.DownloadClient!, download.DownloadId, preferredCategory);
+        if (status != null || string.Equals(preferredCategory, download.GrabCategory, StringComparison.OrdinalIgnoreCase))
+            return status;
+
+        // A failed category move leaves the torrent in its grab category.
+        return await downloadClientService.GetDownloadStatusAsync(
+            download.DownloadClient!, download.DownloadId, download.GrabCategory);
+    }
+
     internal async Task TryRemoveCompletedFolderAsync(string? folder, string title, SportarrDbContext? db)
     {
         if (string.IsNullOrWhiteSpace(folder))
@@ -190,8 +237,16 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
         }
     }
 
-    internal static bool HasReachedSeedLimit(DownloadClientStatus status, Indexer indexer)
+    private static int? EffectiveSeedTime(Indexer indexer, bool isPack) =>
+        isPack ? indexer.SeasonPackSeedTime ?? indexer.SeedTime : indexer.SeedTime;
+
+    internal static bool HasConfiguredSeedGoal(Indexer indexer, bool isPack) =>
+        indexer.SeedRatio.GetValueOrDefault() > 0 || EffectiveSeedTime(indexer, isPack).GetValueOrDefault() > 0;
+
+    internal static bool HasReachedSeedLimit(DownloadClientStatus? status, Indexer indexer, bool isPack = false)
     {
+        if (status == null) return false;
+
         // Check ratio limit
         if (indexer.SeedRatio.HasValue && indexer.SeedRatio.Value > 0)
         {
@@ -199,14 +254,15 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
                 return false;
         }
 
-        // Check time limit (SeedTime is in minutes)
-        if (indexer.SeedTime.HasValue && indexer.SeedTime.Value > 0)
+        // Packs can have a longer seed time than single events.
+        var seedTime = EffectiveSeedTime(indexer, isPack);
+        if (seedTime.HasValue && seedTime.Value > 0)
         {
             var seedingMinutes = status.CompletedAt.HasValue
                 ? (DateTime.UtcNow - status.CompletedAt.Value).TotalMinutes
                 : 0;
 
-            if (seedingMinutes < indexer.SeedTime.Value)
+            if (seedingMinutes < seedTime.Value)
                 return false;
         }
 

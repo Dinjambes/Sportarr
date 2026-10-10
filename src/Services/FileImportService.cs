@@ -268,6 +268,9 @@ public class FileImportService : IFileImportService
             _db.Entry(download).State = EntityState.Unchanged;
         }
 
+        if (download.DownloadClient == null && download.DownloadClientId is int clientId)
+            download.DownloadClient = await _db.DownloadClients.FindAsync(clientId);
+
         // Update status to importing
         download.Status = DownloadStatus.Importing;
         download.LastUpdate = DateTime.UtcNow;
@@ -790,7 +793,7 @@ public class FileImportService : IFileImportService
             // Seeding-aware transfer plan: symlink sources re-link, per-client
             // overrides win, and Auto preserves any torrent its client still
             // tracks so an import can never break seeding.
-            var isTorrentDownload = string.Equals(download.Protocol, "Torrent", StringComparison.OrdinalIgnoreCase);
+            var isTorrentDownload = DownloadClientService.IsTorrentDownload(download);
             TransferPlan plan;
             if (blackholeReadOnly)
             {
@@ -810,7 +813,8 @@ public class FileImportService : IFileImportService
             }
             else
             {
-                var stillInClient = isTorrentDownload && await IsStillInClientAsync(download);
+                // Client status cannot prove a torrent source is safe to move.
+                var stillInClient = isTorrentDownload;
                 plan = ImportTransferPlanner.Resolve(
                     download.DownloadClient?.PostImportMode ?? PostImportMode.Auto,
                     isTorrentDownload,
@@ -1690,60 +1694,6 @@ public class FileImportService : IFileImportService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[Import] Failed to set file date on {Path}", destinationPath);
-        }
-    }
-
-    /// <summary>
-    /// Look up whether the download's client still tracks this item. Used by
-    /// the seeding-aware transfer plan: a torrent the client still has must
-    /// keep its source file. On any lookup failure the answer is TRUE - when
-    /// in doubt, preserving a seed beats breaking one.
-    /// </summary>
-    private async Task<bool> IsStillInClientAsync(DownloadQueueItem download)
-    {
-        if (download.DownloadClient == null || string.IsNullOrEmpty(download.DownloadId))
-        {
-            return false;
-        }
-
-        try
-        {
-            var status = await _downloadClientService.GetDownloadStatusAsync(download.DownloadClient, download.DownloadId);
-            if (status != null)
-            {
-                return true;
-            }
-
-            // A null status can mean EITHER "the torrent is gone" or "the
-            // check failed" - the client adapters swallow login failures,
-            // timeouts, and HTTP errors into null, so the catch below never
-            // sees them. Treating that ambiguity as "gone" moved seeding
-            // torrents out from under their client on any transient blip.
-            // Only trust "gone" when the client is provably reachable right
-            // now, and even then confirm with a second lookup.
-            var (reachable, _) = await _downloadClientService.TestConnectionAsync(download.DownloadClient, writeProbe: false);
-            if (!reachable)
-            {
-                _logger.LogWarning("[Import] {Client} is unreachable while checking whether the download is still seeding - assuming it is, to protect seeding",
-                    download.DownloadClient.Name);
-                return true;
-            }
-
-            status = await _downloadClientService.GetDownloadStatusAsync(download.DownloadClient, download.DownloadId);
-            if (status != null)
-            {
-                return true;
-            }
-
-            _logger.LogInformation("[Import] {Client} is reachable and does not track download {DownloadId} - treating it as removed from the client",
-                download.DownloadClient.Name, download.DownloadId);
-            return false;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning("[Import] Could not check whether the download is still in {Client} ({Error}) - assuming it is, to protect seeding",
-                download.DownloadClient.Name, ex.Message);
-            return true;
         }
     }
 
