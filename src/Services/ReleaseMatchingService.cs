@@ -75,6 +75,7 @@ public class ReleaseMatchingService
     private static readonly Regex[] NonEventContentPatterns = new[]
     {
         new Regex(@"\bpress[\s\.\-_]*conf", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),           // press conference, press.conf, pressconf
+        new Regex(@"(?<![0-9A-Za-z])driver(?:s['’]?|['’]s)?[\s._-]*conference(?![0-9A-Za-z])", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
         new Regex(@"\binterview", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),                      // interview, interviews
         new Regex(@"\bbuild[\s\.\-_]*up", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),              // build up, build-up, buildup
         new Regex(@"\bpre[\s\.\-_]*show", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),              // pre show, pre-show, preshow
@@ -2622,6 +2623,8 @@ public class ReleaseMatchingService
                 // Map to friendly names
                 if (detected.Contains("press") && detected.Contains("conf"))
                     return "Press Conference";
+                if (detected.Contains("driver") && detected.Contains("conference"))
+                    return "Drivers Conference";
                 if (detected.Contains("interview"))
                     return "Interview";
                 if (detected.Contains("build") && detected.Contains("up"))
