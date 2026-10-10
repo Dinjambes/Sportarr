@@ -1822,6 +1822,9 @@ namespace Sportarr.Api.Migrations
                     b.Property<DateTime>("Created")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("DisableSslCertificateValidation")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("DownloadClientId")
                         .HasColumnType("INTEGER");
 

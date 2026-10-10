@@ -2687,6 +2687,7 @@ public static class DatabaseInitializer
         EnsureColumn(db, "Leagues", "SessionTypeQualityProfiles", "TEXT NULL");
         EnsureColumn(db, "MediaManagementSettings", "UnmonitorDeletedEvents", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(db, "Teams", "UserAliases", "TEXT");
+        EnsureColumn(db, "Indexers", "DisableSslCertificateValidation", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(db, "DownloadClients", "BlackholeFolder", "TEXT");
         EnsureColumn(db, "DownloadClients", "WatchFolder", "TEXT");
         EnsureColumn(db, "DownloadClients", "SaveMagnetFiles", "INTEGER NOT NULL DEFAULT 0");

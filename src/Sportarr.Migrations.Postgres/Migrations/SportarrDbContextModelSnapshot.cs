@@ -1876,6 +1876,9 @@ namespace Sportarr.Api.Migrations.Postgres.Migrations
                     b.Property<DateTime>("Created")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("DisableSslCertificateValidation")
+                        .HasColumnType("boolean");
+
                     b.Property<int?>("DownloadClientId")
                         .HasColumnType("integer");
 

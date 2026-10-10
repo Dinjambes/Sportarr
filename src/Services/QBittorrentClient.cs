@@ -266,7 +266,7 @@ public class QBittorrentClient
             {
                 _logger.LogInformation("[qBittorrent] Downloading torrent file from URL...");
 
-                var downloadResult = await DownloadTorrentFileAsync(torrentUrl);
+                var downloadResult = await DownloadTorrentFileAsync(torrentUrl, config.DisableSslCertificateValidation);
                 if (!downloadResult.IsSuccess)
                 {
                     _logger.LogError("[qBittorrent] ========== TORRENT DOWNLOAD FAILED ==========");
@@ -1341,12 +1341,12 @@ public class QBittorrentClient
     /// Critical for Prowlarr URLs which require the request to come from Sportarr,
     /// not from qBittorrent which doesn't have Prowlarr's authentication.
     /// </summary>
-    private Task<TorrentDownloadResult> DownloadTorrentFileAsync(string torrentUrl)
+    private Task<TorrentDownloadResult> DownloadTorrentFileAsync(string torrentUrl, bool skipSslValidation)
         // Shared with the Transmission and rTorrent paths via TorrentFileResolver,
         // which follows redirects manually so a magnet redirect is detected rather
         // than handed to an HTTP client that cannot follow a cross-scheme redirect.
         => _httpClientFactory != null
-            ? TorrentFileResolver.ResolveAsync(torrentUrl, skipSslValidation: false, _httpClientFactory, _logger)
+            ? TorrentFileResolver.ResolveAsync(torrentUrl, skipSslValidation, _httpClientFactory, _logger)
             : throw new InvalidOperationException("Torrent-file resolution requires an IHttpClientFactory-constructed client");
 
     /// <summary>

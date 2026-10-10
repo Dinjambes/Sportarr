@@ -145,39 +145,51 @@ public static class ServiceCollectionExtensions
         // speed the network allowed, right past the request delay the user
         // configured for that indexer.
         services.AddTransient<IndexerQueryQuotaHandler>();
-        services.AddHttpClient("IndexerClient")
-            .AddTransientHttpErrorPolicy(policyBuilder =>
-                policyBuilder.WaitAndRetryAsync(
-                    retryCount: 3,
-                    sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
-                    onRetry: (outcome, timespan, retryCount, context) =>
+        RegisterIndexerClient("IndexerClient", false);
+        RegisterIndexerClient("IndexerClientSkipSsl", true);
+
+        void RegisterIndexerClient(string name, bool skipSsl)
+        {
+            var builder = services.AddHttpClient(name)
+                .AddTransientHttpErrorPolicy(policyBuilder =>
+                    policyBuilder.WaitAndRetryAsync(
+                        retryCount: 3,
+                        sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                        onRetry: (outcome, timespan, retryCount, context) =>
+                        {
+                            Console.WriteLine($"[Indexer] Retry {retryCount} after {timespan.TotalSeconds}s due to {outcome.Exception?.Message ?? outcome.Result.StatusCode.ToString()}");
+                        }))
+                .AddHttpMessageHandler<IndexerQueryQuotaHandler>()
+                .ConfigureHttpClient((sp, client) =>
+                {
+                    var timeoutSeconds = 30;
+                    try
                     {
-                        Console.WriteLine($"[Indexer] Retry {retryCount} after {timespan.TotalSeconds}s due to {outcome.Exception?.Message ?? outcome.Result.StatusCode.ToString()}");
-                    }))
-            .AddHttpMessageHandler<IndexerQueryQuotaHandler>()
-            .ConfigureHttpClient((sp, client) =>
+                        var configService = sp.GetRequiredService<ConfigService>();
+                        var config = configService.GetConfigAsync().GetAwaiter().GetResult();
+                        timeoutSeconds = Math.Max(5, config.IndexerHttpTimeoutSeconds);
+                    }
+                    catch
+                    {
+                        // Config can be unavailable during early startup.
+                    }
+                    client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd("Sportarr/1.0");
+                });
+
+            if (skipSsl)
             {
-                // Config.IndexerHttpTimeoutSeconds, read fresh on every client
-                // creation (the (IServiceProvider, HttpClient) overload runs each
-                // time HttpClientFactory rotates a handler, not just once at
-                // startup), so a private tracker behind Cloudflare/FlareSolverr or
-                // a slow Usenet indexer can be given more than the 30s default
-                // without an app restart. Blocking here is safe: this callback
-                // runs outside any request's SynchronizationContext.
-                var timeoutSeconds = 30;
-                try
+                builder.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
                 {
-                    var configService = sp.GetRequiredService<ConfigService>();
-                    var config = configService.GetConfigAsync().GetAwaiter().GetResult();
-                    timeoutSeconds = Math.Max(5, config.IndexerHttpTimeoutSeconds);
-                }
-                catch
-                {
-                    // Config not readable yet (very early startup) - keep the default.
-                }
-                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
-                client.DefaultRequestHeaders.UserAgent.ParseAdd("Sportarr/1.0");
-            });
+                    AllowAutoRedirect = false,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                    SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                    {
+                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true
+                    }
+                });
+            }
+        }
 
         // BTN requires a dedicated client: no auto-redirect (so Cloudflare/site redirects surface as
         // 3xx rather than silently resolving to an HTML page), and a recognised User-Agent.

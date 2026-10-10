@@ -340,6 +340,7 @@ public class Indexer
     public required string Url { get; set; }
     public string? ApiKey { get; set; }
     public string ApiPath { get; set; } = "/api";
+    public bool DisableSslCertificateValidation { get; set; } = false;
 
     // Enable/Disable controls
     public bool Enabled { get; set; } = true;
