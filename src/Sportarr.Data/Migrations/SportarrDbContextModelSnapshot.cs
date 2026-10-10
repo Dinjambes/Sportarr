@@ -1365,6 +1365,9 @@ namespace Sportarr.Api.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("IsIptvRecording")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Languages")
                         .IsRequired()
                         .HasColumnType("TEXT");

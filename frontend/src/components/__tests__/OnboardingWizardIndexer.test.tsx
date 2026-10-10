@@ -20,6 +20,7 @@ const indexerFields = [
   { name: 'grabLimit', value: '' },
   { name: 'requestDelayMs', value: '0' },
   { name: 'earlyReleaseLimit', value: '' },
+  { name: 'disableSslCertificateValidation', value: 'false' },
   { name: 'failDownloads', value: '' },
 ];
 

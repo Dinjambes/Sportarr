@@ -1403,6 +1403,9 @@ namespace Sportarr.Api.Migrations.Postgres.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<bool>("IsIptvRecording")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Languages")
                         .IsRequired()
                         .HasColumnType("text");

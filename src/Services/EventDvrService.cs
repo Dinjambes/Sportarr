@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 
 namespace Sportarr.Api.Services;
@@ -525,6 +526,19 @@ public class EventDvrService
         // Probe the file to detect quality
         await ProbeAndUpdateRecordingQualityAsync(recording);
 
+        var config = await _configService.GetConfigAsync();
+        if (config.DvrReplaceRecordingsWithIndexerReleases)
+        {
+            var heldFiles = await _db.EventFiles.AsNoTracking()
+                .Where(file => file.EventId == recording.EventId && file.Exists)
+                .ToListAsync();
+            if (SourcePrecedence.RecordingConflictsWithIndexerFile(heldFiles, recording.PartName))
+            {
+                _logger.LogInformation("[EventDVR] Indexer file already covers recording {RecordingId}; keeping the recording output unregistered", recordingId);
+                return true;
+            }
+        }
+
         // A recording with an import mode goes through the library import, so
         // it lands in the event's folder under the normal naming rules. Without
         // one it stays where the recorder wrote it and only the path is
@@ -566,6 +580,7 @@ public class EventDvrService
             QualityScore = qualityScore,
             CustomFormatScore = customFormatScore,
             Source = "IPTV",
+            IsIptvRecording = true,
             Codec = recording.VideoCodec,
             PartName = recording.PartName,
             PartNumber = EventPartDetector.ResolvePartNumber(
@@ -585,7 +600,6 @@ public class EventDvrService
             .Select(file => file.PartNumber)
             .ToListAsync();
         presentParts.Add(eventFile.PartNumber);
-        var config = await _configService.GetConfigAsync();
         recording.Event.HasFile = EventPartDetector.AreAllMonitoredPartsPresent(
             recording.Event.Sport, recording.Event.Title, recording.Event.League?.Name,
             recording.Event.MonitoredParts, recording.Event.League?.MonitoredParts,
@@ -632,6 +646,7 @@ public class EventDvrService
                 // A recording replaces what the event holds only with an upgrade;
                 // a rejected recording stays in the DVR folder with the reason logged.
                 OnlyIfUpgrade = true,
+                IsIptvRecording = true,
             }
         });
 

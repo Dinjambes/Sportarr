@@ -41,7 +41,8 @@ internal sealed class PartIdentityIntegrationHarness : IAsyncDisposable
         string title = "UFC 9999", string sport = "Fighting", string leagueName = "UFC", bool relational = false,
         bool writeMetadata = false, string? mediaRoot = null)
     {
-        if (mediaRoot != null && !Path.GetFullPath(mediaRoot).StartsWith("/data/e2e-lib/", StringComparison.Ordinal))
+        if (mediaRoot != null && Path.GetFullPath(mediaRoot) != "/data/e2e-lib" &&
+            !Path.GetFullPath(mediaRoot).StartsWith("/data/e2e-lib/", StringComparison.Ordinal))
             throw new InvalidOperationException("The test media root must be under /data/e2e-lib.");
         var directory = Path.Combine(mediaRoot ?? Path.GetTempPath(),
             "sportarr-part-identity-" + Guid.NewGuid().ToString("N"));
@@ -91,6 +92,7 @@ internal sealed class PartIdentityIntegrationHarness : IAsyncDisposable
         app.MapEventSearchAndGrabEndpoints();
         app.MapSonarrReleasePushEndpoint();
         app.MapManualQueueImportEndpoint();
+        app.MapSonarrWantedEndpoint();
         await app.StartAsync();
         var rig = new PartIdentityIntegrationHarness(app, directory, transport);
         if (relational) await rig.Db.Database.EnsureCreatedAsync();
