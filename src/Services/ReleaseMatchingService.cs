@@ -167,17 +167,10 @@ public class ReleaseMatchingService
 
     private static readonly Regex[] _roundNumberPatterns = new[]
     {
-        new Regex(@"Round[\s\.\-]*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase),   // Round 22, Round22
-        new Regex(@"\bRd[\s\.\-]*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase),    // Rd 22, Rd22
-        new Regex(@"\bR(\d{1,2})\b", RegexOptions.Compiled | RegexOptions.IgnoreCase),        // R22 (not R2025)
-        // {Year}x{Round} marker (e.g. "2026x02" -> round 2): the round follows
-        // the season-year after an 'x'. Some feeds (Sky's F1 releases among
-        // them) carry no "Round" keyword, so without this the round-mismatch
-        // guard below never fires and a wrong-round release could ride the year
-        // bonus over threshold. Listed last so explicit Round/Rd/R forms win
-        // when both are present. The boundaries are [^0-9A-Za-z] lookarounds
-        // rather than \b so underscore-delimited titles (Formula_1_2026x02_...)
-        // match too -- '_' is a word char, so \b would not fire around it.
+        new Regex(@"(?<![0-9A-Za-z])Round[\s\._\-]*(\d+)(?![0-9A-Za-z])", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new Regex(@"(?<![0-9A-Za-z])Rd[\s\._\-]*(\d+)(?![0-9A-Za-z])", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new Regex(@"(?<![0-9A-Za-z])R(\d{1,2})(?![0-9A-Za-z])", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        // Year X can identify rounds outside Formula 1. Check explicit tokens first.
         new Regex(@"(?<![0-9A-Za-z])20[12]\dx(\d{1,2})(?![0-9A-Za-z])", RegexOptions.Compiled | RegexOptions.IgnoreCase), // 2026x02
     };
 
@@ -339,6 +332,11 @@ public class ReleaseMatchingService
             ReleaseName = release.Title,
             EventTitle = evt.Title
         };
+        var formulaOne = evt.League?.Name.Contains("Formula 1", StringComparison.OrdinalIgnoreCase) == true;
+        var ambiguousFormulaOneYearX = formulaOne &&
+            _roundNumberPatterns[^1].IsMatch(release.Title) &&
+            !_roundNumberPatterns.Take(_roundNumberPatterns.Length - 1)
+                .Any(pattern => pattern.IsMatch(release.Title));
 
         // These lines run once per candidate release per event. At Debug they
         // buried every other subsystem and rotated support logs away in
@@ -1416,7 +1414,8 @@ public class ReleaseMatchingService
             // VALIDATION 6b: Motorsport round number validation
             // For motorsport events, Round 20 release should NOT match Round 22 event
             // Extract round from release title and compare to event's Round field
-            var releaseRound = ExtractRoundNumber(release.Title);
+            // F1 uploader numbers do not reliably identify championship rounds.
+            var releaseRound = ExtractRoundNumber(release.Title, includeYearX: !formulaOne);
             var eventRound = !string.IsNullOrEmpty(evt.Round) ? ExtractRoundNumber($"Round {evt.Round}") : null;
 
             if (releaseRound.HasValue && eventRound.HasValue)
@@ -1519,6 +1518,19 @@ public class ReleaseMatchingService
                 _logger.LogTrace("[Release Matching] Hard rejection: location mismatch ({ReleaseLocation} vs {EventLocation}): '{Release}'",
                     conflictingLocation.Value.ReleaseLocation, conflictingLocation.Value.EventLocation, release.Title);
             }
+
+            if (ambiguousFormulaOneYearX && !result.IsHardRejection)
+            {
+                var selectedRace = GetPrimaryMotorsportLocation(normalizedEvent);
+                var namedRace = GetPrimaryMotorsportLocation(normalizedRelease);
+                if (selectedRace != null && namedRace != null &&
+                    !HasMotorsportLocation(normalizedRelease, selectedRace))
+                {
+                    result.Confidence -= 100;
+                    result.IsHardRejection = true;
+                    result.Rejections.Add($"Location mismatch: release names '{namedRace}' but event is '{selectedRace}'");
+                }
+            }
         }
 
         // VALIDATION 6d: Day/session number validation for multi-day events
@@ -1616,7 +1628,8 @@ public class ReleaseMatchingService
                 "Full event file",
             };
             bool hasEventLevelReason = result.MatchReasons.Any(r =>
-                !seasonLevelReasons.Any(w => r.StartsWith(w, StringComparison.OrdinalIgnoreCase)));
+                !seasonLevelReasons.Any(w => r.StartsWith(w, StringComparison.OrdinalIgnoreCase)) &&
+                !(ambiguousFormulaOneYearX && r.StartsWith("Session type matches", StringComparison.OrdinalIgnoreCase)));
 
             // Strong title overlap: the event's own distinctive (non-numeric)
             // words appear in the release. Covers tournament/individual sports
@@ -1631,7 +1644,10 @@ public class ReleaseMatchingService
             bool strongTitleMatch = eventWords.Count > 0 &&
                 (sharedEventWords >= 2 || (double)sharedEventWords / eventWords.Count >= 0.6);
 
-            if (!hasEventLevelReason && !strongTitleMatch)
+            bool sharedLocation = ambiguousFormulaOneYearX &&
+                HasSharedMotorsportLocation(normalizedRelease, normalizedEvent);
+
+            if (!hasEventLevelReason && !strongTitleMatch && !sharedLocation)
             {
                 result.Confidence -= 100;
                 result.IsHardRejection = true;
@@ -1946,11 +1962,12 @@ public class ReleaseMatchingService
         return races;
     }
 
-    private int? ExtractRoundNumber(string title)
+    private int? ExtractRoundNumber(string title, bool includeYearX = true)
     {
-        foreach (var pattern in _roundNumberPatterns)
+        var patternCount = includeYearX ? _roundNumberPatterns.Length : _roundNumberPatterns.Length - 1;
+        for (var index = 0; index < patternCount; index++)
         {
-            var match = pattern.Match(title);
+            var match = _roundNumberPatterns[index].Match(title);
             if (match.Success && int.TryParse(match.Groups[1].Value, out var roundNum))
             {
                 return roundNum;
@@ -2960,6 +2977,40 @@ public class ReleaseMatchingService
         { "Thailand", new(StringComparer.OrdinalIgnoreCase) { "Buriram", "Chang" } },
         { "Netherlands", new(StringComparer.OrdinalIgnoreCase) { "Zandvoort", "Assen" } },
     };
+
+    private static bool HasSharedMotorsportLocation(string normalizedRelease, string normalizedEvent)
+    {
+        var selectedRace = GetPrimaryMotorsportLocation(normalizedEvent);
+        return selectedRace != null && HasMotorsportLocation(normalizedRelease, selectedRace);
+    }
+
+    private static bool HasMotorsportLocation(string normalizedTitle, string location)
+    {
+        var names = MotorsportLocations[location].Append(location);
+        return names.Any(name => !SearchNormalizationService.SceneLanguageTags.Contains(name) &&
+            GetWordBoundaryRegex(name).IsMatch(normalizedTitle));
+    }
+
+    private static string? GetPrimaryMotorsportLocation(string normalizedTitle)
+    {
+        string? firstLocation = null;
+        var firstIndex = int.MaxValue;
+        foreach (var (location, aliases) in MotorsportLocations)
+        {
+            var names = aliases.Append(location);
+            foreach (var name in names)
+            {
+                var match = GetWordBoundaryRegex(name).Match(normalizedTitle);
+                if (!match.Success || match.Index >= firstIndex)
+                    continue;
+
+                firstLocation = location;
+                firstIndex = match.Index;
+            }
+        }
+
+        return firstLocation;
+    }
 
     /// <summary>
     /// Detect if a release title contains a different motorsport location than the event.

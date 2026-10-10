@@ -87,6 +87,7 @@ internal sealed class PartIdentityIntegrationHarness : IAsyncDisposable
             typeof(IndexerStatusService), typeof(IndexerSearchService), typeof(AutomaticSearchService)
         }) services.AddSingleton(type);
         var app = builder.Build();
+        app.MapManualEventSearchEndpoints();
         app.MapEventSearchAndGrabEndpoints();
         app.MapSonarrReleasePushEndpoint();
         app.MapManualQueueImportEndpoint();
