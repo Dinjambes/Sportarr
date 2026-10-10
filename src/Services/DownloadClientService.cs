@@ -446,13 +446,13 @@ public class DownloadClientService : IDownloadClientService
         try
         {
             _logger.LogInformation("[Download Client] Adding download to {Type}: {Url} (Category: {Category}, Expected: {ExpectedName})",
-                config.Type, url, category, expectedName ?? "N/A");
+                config.Type, SecretRedactor.Url(url), category, expectedName ?? "N/A");
 
             var result = config.Type switch
             {
                 DownloadClientType.QBittorrent => await AddToQBittorrentWithResultAsync(config, url, category, expectedName, seedRatioLimit, seedTimeLimitMinutes),
                 DownloadClientType.Transmission => WrapLegacyResult(await AddToTransmissionAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes)),
-                DownloadClientType.Deluge => WrapLegacyResult(await AddToDelugeAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes)),
+                DownloadClientType.Deluge => await AddToDelugeWithResultAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes),
                 DownloadClientType.RTorrent => WrapLegacyResult(await AddToRTorrentAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes)),
                 DownloadClientType.Sabnzbd => WrapLegacyResult(await AddToSabnzbdAsync(config, url, category, expectedName)),
                 DownloadClientType.NzbGet => WrapLegacyResult(await AddToNzbGetAsync(config, url, category)),
@@ -478,8 +478,8 @@ public class DownloadClientService : IDownloadClientService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Download Client] Error adding download: {Message}", ex.Message);
-            return AddDownloadResult.Failed($"Error adding download: {ex.Message}", AddDownloadErrorType.Unknown);
+            _logger.LogError("[Download Client] Error adding download: {Error}", SecretRedactor.Message(ex.ToString()));
+            return AddDownloadResult.Failed($"Error adding download: {SecretRedactor.Message(ex.Message)}", AddDownloadErrorType.Unknown);
         }
     }
 
@@ -1133,14 +1133,14 @@ public class DownloadClientService : IDownloadClientService
         return await client.AddTorrentFromMetainfoAsync(config, resolved.TorrentData!, category, seedRatioLimit, seedTimeLimitMinutes);
     }
 
-    private async Task<string?> AddToDelugeAsync(DownloadClient config, string url, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
+    private async Task<AddDownloadResult> AddToDelugeWithResultAsync(DownloadClient config, string url, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
     {
         var client = GetDelugeClient(config);
 
         // Magnet links go straight to Deluge via core.add_torrent_magnet.
         if (TorrentHashHelper.IsMagnet(url))
         {
-            return await client.AddTorrentMagnetAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes);
+            return WrapLegacyResult(await client.AddTorrentMagnetAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes));
         }
 
         // Resolve the .torrent link here (following redirects manually) so a magnet
@@ -1150,16 +1150,18 @@ public class DownloadClientService : IDownloadClientService
         var resolved = await TorrentFileResolver.ResolveAsync(url, config.DisableSslCertificateValidation, _httpClientFactory, _logger);
         if (!resolved.IsSuccess)
         {
-            _logger.LogError("[Download Client] Failed to resolve torrent for Deluge from {Url}: {Error}", url, resolved.ErrorMessage);
-            return null;
+            _logger.LogError("[Download Client] Failed to resolve torrent for Deluge from {Url}: {Error}",
+                SecretRedactor.Url(url), SecretRedactor.Message(resolved.ErrorMessage));
+            return AddDownloadResult.Failed(
+                $"Torrent download failed before Deluge: {SecretRedactor.Message(resolved.ErrorMessage)}");
         }
 
         if (resolved.IsMagnetRedirect)
         {
-            return await client.AddTorrentMagnetAsync(config, resolved.MagnetLink!, category, seedRatioLimit, seedTimeLimitMinutes);
+            return WrapLegacyResult(await client.AddTorrentMagnetAsync(config, resolved.MagnetLink!, category, seedRatioLimit, seedTimeLimitMinutes));
         }
 
-        return await client.AddTorrentFromBytesAsync(config, resolved.TorrentData!, category, seedRatioLimit, seedTimeLimitMinutes);
+        return WrapLegacyResult(await client.AddTorrentFromBytesAsync(config, resolved.TorrentData!, category, seedRatioLimit, seedTimeLimitMinutes));
     }
 
     private async Task<string?> AddToRTorrentAsync(DownloadClient config, string url, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)

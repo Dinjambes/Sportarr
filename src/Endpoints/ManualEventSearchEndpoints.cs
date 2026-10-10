@@ -152,7 +152,7 @@ app.MapPost("/api/event/{eventId:int}/search", async (
     }
 
     var allResults = new List<ReleaseSearchResult>();
-    var seenGuids = new HashSet<string>();
+    var releaseDeduplicator = new ManualReleaseDeduplicator();
     var skippedIndexers = new List<SkippedIndexer>();
 
     // UNIVERSAL: Build search queries using sport-agnostic approach
@@ -289,10 +289,10 @@ app.MapPost("/api/event/{eventId:int}/search", async (
     foreach (var query in queries)
     {
         var results = await SearchQueryAsync(query, queries.Count);
-        // Add results with GUID deduplication (fallback queries may overlap)
+        // Add each release once across search variants.
         foreach (var result in results)
         {
-            if (string.IsNullOrEmpty(result.Guid) || seenGuids.Add(result.Guid))
+            if (releaseDeduplicator.TryAdd(result))
             {
                 allResults.Add(result);
             }
@@ -308,7 +308,7 @@ app.MapPost("/api/event/{eventId:int}/search", async (
             var results = await SearchQueryAsync(query, queries.Count + fallbackQueries.Count);
             foreach (var result in results)
             {
-                if (string.IsNullOrEmpty(result.Guid) || seenGuids.Add(result.Guid))
+                if (releaseDeduplicator.TryAdd(result))
                 {
                     allResults.Add(result);
                 }
@@ -409,7 +409,7 @@ app.MapPost("/api/event/{eventId:int}/search", async (
         var uniqueProbeResults = new List<ReleaseSearchResult>();
         foreach (var release in probeResults)
         {
-            if (string.IsNullOrEmpty(release.Guid) || seenGuids.Add(release.Guid))
+            if (releaseDeduplicator.TryAdd(release))
             {
                 uniqueProbeResults.Add(release);
             }
@@ -560,7 +560,7 @@ app.MapPost("/api/event/{eventId:int}/search-pack", async (
     }
 
     var allResults = new List<ReleaseSearchResult>();
-    var seenGuids = new HashSet<string>();
+    var releaseDeduplicator = new ManualReleaseDeduplicator();
     var skippedIndexers = new List<SkippedIndexer>();
     var packConfig = await configService.GetConfigAsync();
     var sportarrId = Sportarr.Api.Helpers.SportarrIdToken.Normalize(evt.League?.ExternalId);
@@ -610,7 +610,7 @@ app.MapPost("/api/event/{eventId:int}/search-pack", async (
         {
             // A release with no GUID used to be discarded outright. Some
             // indexers do not send one, and those releases simply vanished.
-            if (!string.IsNullOrEmpty(result.Guid) && !seenGuids.Add(result.Guid)) continue;
+            if (!releaseDeduplicator.TryAdd(result)) continue;
 
             // Mark as pack result
             result.IsPack = true;
