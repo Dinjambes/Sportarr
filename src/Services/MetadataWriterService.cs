@@ -46,7 +46,7 @@ public class MetadataWriterService : IMetadataWriterService
 
         if (!evt.EpisodeNumber.HasValue)
         {
-            _logger.LogDebug("[Metadata] Skipping NFO for '{Title}' - no episode number assigned yet", evt.Title);
+            _logger.LogInformation("[Metadata] Skipping local metadata for '{Title}' because no episode number is assigned", evt.Title);
             return;
         }
 
