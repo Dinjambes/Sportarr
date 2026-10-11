@@ -453,31 +453,6 @@ app.MapGet("/api/leagues/{id:int}/events", async (int id, int? page, int? pageSi
         return Results.NotFound(new { error = "League not found" });
     }
 
-    // One season at a time when the caller asks for one. The visibility rules
-    // are per season anyway (cup stage sizes are computed within a season), so
-    // narrowing here gives the same answer for less.
-    var query = db.Events
-        .AsNoTracking()
-        .Include(e => e.HomeTeam)
-        .Include(e => e.AwayTeam)
-        .Include(e => e.Files)
-        .Where(e => e.LeagueId == id);
-
-    if (!string.IsNullOrEmpty(season))
-    {
-        query = season == "Unknown"
-            ? query.Where(e => e.Season == null || e.Season == "")
-            : query.Where(e => e.Season == season);
-    }
-
-    var events = await query
-        .OrderByDescending(e => e.EventDate)
-        .ToListAsync();
-
-    var filteredEvents = SelectVisibleEvents(events, league, showAll == true);
-    logger.LogDebug("[LEAGUES] Showing {Filtered}/{Total} events (showAll: {ShowAll})",
-        filteredEvents.Count, events.Count, showAll == true);
-
     // Paging is opt-in so the frontend and every existing consumer keep the
     // plain array they already expect. Integrations ask for a page and get an
     // envelope instead. A full MLB season is around 2400 events, and an
@@ -485,28 +460,60 @@ app.MapGet("/api/leagues/{id:int}/events", async (int id, int? page, int? pageSi
     // whole seasons in single responses does not scale.
     if (page.HasValue || pageSize.HasValue)
     {
-        var currentPage = Math.Max(1, page ?? 1);
-        var size = Math.Clamp(pageSize ?? 100, 1, 1000);
-        var totalRecords = filteredEvents.Count;
+        var (currentPage, size) = NormalizeLeagueEventsPaging(page, pageSize);
 
-        var pageItems = filteredEvents
-            .Skip((currentPage - 1) * size)
-            .Take(size)
+        if (showAll == true || league.KeepAllEvents)
+        {
+            // Unfiltered requests can page in the database.
+            var (countQuery, pageQuery) = ComposeUnfilteredEventPageQueries(db, id, season, currentPage, size);
+            var totalRecords = await countQuery.CountAsync();
+            var pageEvents = await pageQuery.ToListAsync();
+
+            logger.LogDebug("[LEAGUES] Showing {Filtered}/{Total} events (showAll: {ShowAll})",
+                pageEvents.Count, totalRecords, showAll == true);
+
+            var pageItems = pageEvents
+                .Select(e => EventResponse.FromEvent(e, config.EnableMultiPartEpisodes, filesLoaded: true, leagueOverride: league))
+                .ToList();
+
+            logger.LogInformation("[LEAGUES] Returning page {Page} ({Count} of {Total}) for league: {LeagueName}",
+                currentPage, pageItems.Count, totalRecords, league.Name);
+
+            return Results.Ok(new
+            {
+                page = currentPage,
+                pageSize = size,
+                totalRecords,
+                totalPages = LeagueEventsTotalPages(totalRecords, size),
+                records = pageItems
+            });
+        }
+
+        // Filtered requests need the whole season for cup visibility.
+        var slice = await GetFilteredEventPageAsync(db, league, season, showAll == true, currentPage, size);
+
+        var filteredPageItems = slice.Records
             .Select(e => EventResponse.FromEvent(e, config.EnableMultiPartEpisodes, filesLoaded: true, leagueOverride: league))
             .ToList();
 
         logger.LogInformation("[LEAGUES] Returning page {Page} ({Count} of {Total}) for league: {LeagueName}",
-            currentPage, pageItems.Count, totalRecords, league.Name);
+            currentPage, filteredPageItems.Count, slice.TotalRecords, league.Name);
 
         return Results.Ok(new
         {
             page = currentPage,
             pageSize = size,
-            totalRecords,
-            totalPages = (int)Math.Ceiling(totalRecords / (double)size),
-            records = pageItems
+            totalRecords = slice.TotalRecords,
+            totalPages = LeagueEventsTotalPages(slice.TotalRecords, size),
+            records = filteredPageItems
         });
     }
+
+    var events = await LoadLeagueEventsForVisibilityAsync(db, id, season);
+
+    var filteredEvents = SelectVisibleEvents(events, league, showAll == true);
+    logger.LogDebug("[LEAGUES] Showing {Filtered}/{Total} events (showAll: {ShowAll})",
+        filteredEvents.Count, events.Count, showAll == true);
 
     // Convert to DTOs
     var response = filteredEvents.Select(e => EventResponse.FromEvent(e, config.EnableMultiPartEpisodes, filesLoaded: true, leagueOverride: league)).ToList();
@@ -3004,5 +3011,88 @@ app.MapPost("/api/leagues/move/bulk", async (BulkMoveLeaguesRequest request, Lea
                     league.MonitorFinals, league.MonitorPlayoffs, league.MonitorPreseason,
                     cupStageSizesBySeason[e.Season ?? ""], e.HasLaterSeasonFinal))
             .ToList();
+    }
+
+    internal static (int CurrentPage, int Size) NormalizeLeagueEventsPaging(int? page, int? pageSize)
+        => (Math.Max(1, page ?? 1), Math.Clamp(pageSize ?? 100, 1, 1000));
+
+    internal static int LeagueEventsTotalPages(int totalRecords, int size)
+        => (int)Math.Ceiling(totalRecords / (double)size);
+
+    internal static int LeagueEventsPageOffset(int currentPage, int size)
+        => (int)Math.Clamp(((long)currentPage - 1) * size, 0, int.MaxValue);
+
+    internal static async Task<List<Event>> LoadLeagueEventsForVisibilityAsync(
+        SportarrDbContext db, int leagueId, string? season)
+    {
+        var query = db.Events
+            .AsNoTracking()
+            .Include(e => e.HomeTeam)
+            .Include(e => e.AwayTeam)
+            .Include(e => e.Files)
+            .Where(e => e.LeagueId == leagueId);
+
+        if (!string.IsNullOrEmpty(season))
+        {
+            query = season == "Unknown"
+                ? query.Where(e => e.Season == null || e.Season == "")
+                : query.Where(e => e.Season == season);
+        }
+
+        return await query
+            .OrderByDescending(e => e.EventDate)
+            .ThenByDescending(e => e.Id)
+            .ToListAsync();
+    }
+
+    // Cup visibility needs every round in a season before paging.
+    internal static async Task<LeagueEventsPageSlice> GetFilteredEventPageAsync(
+        SportarrDbContext db, League league, string? season, bool showAll, int currentPage, int size)
+    {
+        var events = await LoadLeagueEventsForVisibilityAsync(db, league.Id, season);
+        var filteredEvents = SelectVisibleEvents(events, league, showAll);
+
+        return new LeagueEventsPageSlice
+        {
+            TotalRecords = filteredEvents.Count,
+            Records = filteredEvents
+                .Skip(LeagueEventsPageOffset(currentPage, size))
+                .Take(size)
+                .ToList(),
+        };
+    }
+
+    internal sealed class LeagueEventsPageSlice
+    {
+        public required int TotalRecords { get; init; }
+        public required List<Event> Records { get; init; }
+    }
+
+    // The Id tiebreaker keeps page boundaries stable for tied dates.
+    internal static (IQueryable<Event> CountQuery, IQueryable<Event> PageQuery) ComposeUnfilteredEventPageQueries(
+        SportarrDbContext db, int leagueId, string? season, int currentPage, int size)
+    {
+        var query = db.Events
+            .AsNoTracking()
+            .Where(e => e.LeagueId == leagueId);
+
+        // "Unknown" includes null and empty season values.
+        if (!string.IsNullOrEmpty(season))
+        {
+            query = season == "Unknown"
+                ? query.Where(e => e.Season == null || e.Season == "")
+                : query.Where(e => e.Season == season);
+        }
+
+        var pageQuery = query
+            .Include(e => e.HomeTeam)
+            .Include(e => e.AwayTeam)
+            .Include(e => e.Files)
+            .OrderByDescending(e => e.EventDate)
+            .ThenByDescending(e => e.Id)
+            .Skip(LeagueEventsPageOffset(currentPage, size))
+            .Take(size);
+
+        return (CountQuery: query, PageQuery: pageQuery);
     }
 }

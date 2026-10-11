@@ -1335,6 +1335,8 @@ namespace Sportarr.Api.Migrations
 
                     b.HasIndex("Status");
 
+                    b.HasIndex("LeagueId", "EventDate", "Id");
+
                     b.ToTable("Events");
                 });
 

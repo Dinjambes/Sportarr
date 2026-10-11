@@ -160,6 +160,8 @@ public class SportarrDbContext : DbContext
             entity.HasIndex(e => e.EventDate);
             entity.HasIndex(e => e.Sport);
             entity.HasIndex(e => e.LeagueId);
+            // The index serves league pages in date and Id order.
+            entity.HasIndex(e => new { e.LeagueId, e.EventDate, e.Id });
             entity.HasIndex(e => e.ExternalId);
             entity.HasIndex(e => e.Status);
             entity.HasIndex(e => e.Monitored); // Frequently filtered in searches
