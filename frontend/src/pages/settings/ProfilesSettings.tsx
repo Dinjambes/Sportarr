@@ -47,6 +47,46 @@ const deepCopyQualityItems = (items: QualityItem[]): QualityItem[] => {
   }));
 };
 
+const prepareCutoffProfile = (items: QualityItem[], cutoffQuality?: number | null) => {
+  const copied = deepCopyQualityItems(items);
+  const original = items.flatMap(item => [item, ...(item.items ?? [])]);
+  const allItems = copied.flatMap(item => [item, ...(item.items ?? [])]);
+  const used = new Set(original.flatMap(item => [item.quality, ...(item.id == null ? [] : [item.id])]));
+  const keptValues = new Set<number>();
+  let nextId = Math.max(1000, ...used) + 1;
+
+  const ownerFor = (value: number) => items.find(item => item.id === value)
+    ?? items.find(item => item.quality === value)
+    ?? items.flatMap(item => item.items ?? []).find(item => item.id === value || item.quality === value);
+
+  // Give an ID to each item whose value resolves to a different item.
+  for (let index = 0; index < allItems.length; index++) {
+    const item = allItems[index];
+    const value = original[index].id ?? original[index].quality;
+    const owner = ownerFor(value);
+    const parent = items.find(group => group.items?.includes(original[index]));
+    const sharesParentsRank = parent != null && parent === owner && (parent.id ?? parent.quality) !== value;
+    if (keptValues.has(value) || (owner !== original[index] && !sharesParentsRank)) {
+      while (used.has(nextId)) nextId++;
+      item.id = nextId;
+      used.add(nextId++);
+    } else {
+      keptValues.add(value);
+    }
+  }
+
+  let selectedCutoff = cutoffQuality;
+  if (cutoffQuality != null && !allItems.some(item => (item.id ?? item.quality) === cutoffQuality)) {
+    const owner = ownerFor(cutoffQuality);
+    if (owner) {
+      const index = original.indexOf(owner);
+      selectedCutoff = allItems[index].id ?? allItems[index].quality;
+    }
+  }
+
+  return { items: copied, cutoffQuality: selectedCutoff };
+};
+
 interface ProfileFormatItem {
   formatId: number;
   formatName: string;
@@ -402,7 +442,7 @@ export default function ProfilesSettings({ showAdvanced = false }: ProfilesSetti
       isDefault: false,
       upgradesAllowed: true,
       cutoffQuality: null,
-      items: deepCopyQualityItems(availableQualities),
+      items: prepareCutoffProfile(availableQualities).items,
       formatItems: customFormats.map(f => ({ formatId: f.id, formatName: f.name, score: 0 })),
       minFormatScore: 0,
       cutoffFormatScore: 10000,
@@ -439,6 +479,7 @@ export default function ProfilesSettings({ showAdvanced = false }: ProfilesSetti
       }));
     setFormData({
       ...profile,
+      ...prepareCutoffProfile(profile.items, profile.cutoffQuality),
       formatItems: [...formatItemsWithNames, ...missingFormats]
     });
     setShowAddModal(true);
@@ -469,10 +510,10 @@ export default function ProfilesSettings({ showAdvanced = false }: ProfilesSetti
       }));
     setFormData({
       ...profile,
+      ...prepareCutoffProfile(profile.items, profile.cutoffQuality),
       id: undefined, // Remove ID so it creates a new profile
       name: `${profile.name} (Copy)`,
       isDefault: false, // Copies shouldn't be default
-      items: deepCopyQualityItems(profile.items),
       formatItems: [...formatItemsWithNames, ...missingFormats]
     });
     setShowAddModal(true);
@@ -644,13 +685,16 @@ export default function ProfilesSettings({ showAdvanced = false }: ProfilesSetti
       const items = [...(prev.items || [])];
       const item = items[index];
       if (isQualityGroup(item)) return prev; // Already a group
+      const used = items.flatMap(existing => [existing, ...(existing.items ?? [])])
+        .flatMap(existing => [existing.quality, ...(existing.id == null ? [] : [existing.id])]);
+      const groupId = Math.max(1000, ...used) + 1;
 
       // Convert to a group with the item as a child
       items[index] = {
         name: item.name,
         quality: item.quality,
         allowed: item.allowed,
-        id: item.id ? item.id + 1000 : 1000 + index, // Group ID
+        id: groupId,
         items: [{ ...item }]
       };
       return { ...prev, items };
@@ -807,17 +851,11 @@ export default function ProfilesSettings({ showAdvanced = false }: ProfilesSetti
   const getProfileCutoffName = (profile: QualityProfile) => {
     if (profile.cutoffQuality === null || profile.cutoffQuality === undefined) return 'Not Set';
 
-    // Search in the profile's own items array by index (quality field)
-    for (const item of profile.items) {
-      if (item.quality === profile.cutoffQuality) {
-        return item.name;
-      }
-      // Also check nested items
-      if (item.items) {
-        const child = item.items.find(c => c.quality === profile.cutoffQuality);
-        if (child) return child.name;
-      }
-    }
+    const prepared = prepareCutoffProfile(profile.items, profile.cutoffQuality);
+    const selected = prepared.items.find(item => (item.id ?? item.quality) === prepared.cutoffQuality)
+      ?? prepared.items.flatMap(item => item.items ?? [])
+        .find(item => (item.id ?? item.quality) === prepared.cutoffQuality);
+    if (selected) return selected.name;
 
     // Fallback to global quality definitions
     return getQualityName(profile.cutoffQuality);
@@ -1132,9 +1170,9 @@ export default function ProfilesSettings({ showAdvanced = false }: ProfilesSetti
                 {/* Quality Items */}
                 <div className="mt-4 pt-4 border-t border-gray-800">
                   <div className="grid grid-cols-3 gap-2">
-                    {profile.items.filter(i => i.allowed).map((item) => (
+                    {profile.items.filter(i => i.allowed).map((item, index) => (
                       <div
-                        key={item.quality}
+                        key={`${profile.id}-${index}`}
                         className="px-3 py-2 rounded text-sm bg-green-950/30 text-green-400 border border-green-900/50"
                       >
                         ✓ {item.name}
@@ -1601,8 +1639,8 @@ export default function ProfilesSettings({ showAdvanced = false }: ProfilesSetti
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Upgrade Until</label>
                 <select
-                  value={formData.cutoffQuality || ''}
-                  onChange={(e) => setFormData(prev => ({ ...prev, cutoffQuality: parseInt(e.target.value) || null }))}
+                  value={formData.cutoffQuality ?? ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, cutoffQuality: e.target.value === '' ? null : Number(e.target.value) }))}
                   className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
                 >
                   <option value="">Select upgrade cutoff...</option>

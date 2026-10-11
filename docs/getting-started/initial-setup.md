@@ -6,6 +6,8 @@ The setup guide walks a new install through the library, release preferences, do
 
 Sportarr includes ready-to-use 1080p and 4K quality profiles. The 1080p profile is the initial default. You can change the default later under **Settings > Profiles**.
 
+In **Settings > Profiles**, **Upgrade Until** accepts a quality or a quality group. Qualities in the same group share a rank, so custom format scores decide between releases at that rank.
+
 Choose **Standard setup** to start with the built-in profiles and neutral custom format scores. Choose **Recommended setup** to import custom format scores and quality size limits from TRaSH Guides. Recommended setup needs an internet connection. If the import fails, your current release preferences stay in place so you can try again.
 
 On a new install, **Skip Step** keeps Standard setup. Reopening the guide and skipping this step does not change existing preferences. Switching from Recommended to Standard clears scores in unedited built-in profiles. Choosing Standard when it is already active leaves scores alone. Custom profiles and previously imported quality size limits are left alone.
