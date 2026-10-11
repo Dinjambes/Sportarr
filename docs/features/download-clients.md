@@ -30,7 +30,9 @@ Each download client has a **Post-Import Mode** controlling how files reach your
 
 If you manage seeding manually and never want Sportarr to move files out of your download folder, set the client's Post-Import Mode to **Hardlink**. Auto keeps a torrent's files in place when the client's state is uncertain.
 
-With **Remove Completed Downloads** enabled on a client, a move import can remove the completed job and its leftover folder, including nfo, sample, and archive leftovers. Sportarr keeps the job and files if it cannot confirm that removal is safe. With the setting off, Sportarr leaves the client's jobs and folders alone.
+**Remove Completed Downloads** starts enabled for new clients. For Usenet, a move import can remove the completed job and its leftover folder, including nfo, sample, and archive leftovers. For torrents, Sportarr waits until the client reports that the job has stopped and its indexer's seed ratio or seed time goal has been met. Sportarr leaves the torrent in the client when no seed goal is set or it cannot confirm that removal is safe. Turn the setting off to leave completed jobs in the client.
+
+Sportarr checks imported torrents again after import when the client reports when each job was added. rTorrent and Aria2 do not report that time. For those clients, Sportarr can remove a qualifying stopped torrent at import time, but does not remove it later because the same job ID could belong to a new download.
 
 ### A file for an event that already has one
 

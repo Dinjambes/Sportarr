@@ -37,6 +37,8 @@ Go to **Settings > Media Management** and add a root folder. This is where Sport
 
 For a local HTTPS indexer with a self-signed certificate, open its advanced settings and turn on **Disable certificate validation**. This works only with a literal address in `10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`. A hostname does not qualify, even if it resolves to one of those addresses. Keep the option off for public indexers. If qBittorrent also connects over HTTPS, its **Settings > Download Clients > qBittorrent > Use SSL > Disable SSL Certificate Validation** option covers `.torrent` links it fetches from the indexer. The indexer option alone does not cover that fetch.
 
+For a local HTTPS service addressed by hostname, turn on advanced settings and use **Settings > General > Certificate Validation > Disabled For Local Addresses**. This applies to outgoing connections, including download clients. Sportarr accepts an invalid certificate only when every address for the hostname and the connected peer are local. Loopback connections are allowed in every mode. **Disabled** accepts invalid certificates from public services too.
+
 ![Add Indexer](../images/add-indexer.png)
 
 ## 4. Add content
