@@ -1172,6 +1172,10 @@ public class QBittorrentClient
             SavePath = outputPath, // Use the determined output path instead of raw SavePath
             ErrorMessage = warningMessage,
             Ratio = torrent.Ratio,
+            TorrentIsStopped = lowerState is "pausedup" or "stoppedup",
+            AddedAt = torrent.AddedOn > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(torrent.AddedOn).UtcDateTime
+                : null,
             CompletedAt = torrent.CompletedOn > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(torrent.CompletedOn).UtcDateTime
                 : null

@@ -2698,6 +2698,8 @@ public static class DatabaseInitializer
         EnsureColumn(db, "MetadataProviders", "ShowNfo", "INTEGER NOT NULL DEFAULT 1");
         EnsureColumn(db, "Tasks", "Result", "TEXT NULL");
         EnsureColumn(db, "DownloadQueue", "IndexerFlags", "TEXT");
+        EnsureColumn(db, "DownloadQueue", "ClientCleanupCompleted", "INTEGER NOT NULL DEFAULT 1");
+        EnsureColumn(db, "DownloadQueue", "ClientCleanupCheckedAt", "TEXT");
         EnsureColumn(db, "Notifications", "LastNotificationSucceeded", "INTEGER NULL");
         EnsureColumn(db, "Notifications", "LastNotificationError", "TEXT NULL");
         EnsureColumn(db, "Notifications", "LastNotificationAt", "TEXT NULL");

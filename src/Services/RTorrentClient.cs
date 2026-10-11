@@ -474,7 +474,11 @@ public class RTorrentClient
             ErrorMessage = null,
             Ratio = torrent.CompletedBytes > 0
                 ? (double)torrent.TotalUploaded / torrent.CompletedBytes
-                : 0
+                : 0,
+            CompletedAt = torrent.TimeFinished > 0 && isComplete
+                ? DateTimeOffset.FromUnixTimeSeconds(torrent.TimeFinished).UtcDateTime
+                : null,
+            TorrentIsStopped = isComplete && !isStarted
         };
     }
 

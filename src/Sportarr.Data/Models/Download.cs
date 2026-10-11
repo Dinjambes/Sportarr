@@ -224,6 +224,8 @@ public class DownloadQueueItem
     public DateTime Added { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
     public DateTime? ImportedAt { get; set; }
+    public bool ClientCleanupCompleted { get; set; }
+    public DateTime? ClientCleanupCheckedAt { get; set; }
     public DateTime? FailedAt { get; set; }
 
     // Enhanced download monitoring fields
@@ -1265,6 +1267,8 @@ public class DownloadClientStatus
     // Seed tracking fields for torrent clients
     public double? Ratio { get; set; } // Current upload/download ratio
     public DateTime? CompletedAt { get; set; } // When the download completed
+    public DateTime? AddedAt { get; set; } // When the client created this job
+    public bool TorrentIsStopped { get; set; }
 }
 
 /// <summary>

@@ -8,7 +8,8 @@ namespace Sportarr.Api.Services;
 
 internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider, ILogger logger)
 {
-    internal async Task RunAsync(DownloadQueueItem download, DownloadClientService downloadClientService, SportarrDbContext? db)
+    internal async Task RunAsync(DownloadQueueItem download, DownloadClientService downloadClientService, SportarrDbContext? db,
+        bool requireJobIdentity = false)
     {
         // The caller holds the job scope for pack completion.
         if (download.IsPack)
@@ -34,7 +35,7 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
                 ? download.DownloadClient.PostImportCategory
                 : download.GrabCategory;
             if (isTorrentDownload &&
-                !await CanRemoveTorrentAsync(download, downloadClientService, db, statusCategory))
+                !await CanRemoveTorrentAsync(download, downloadClientService, db, statusCategory, requireJobIdentity))
                 return;
 
             // Ask the client where the job landed BEFORE removing it. Once
@@ -98,6 +99,14 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
                 logger.LogInformation("[Enhanced Download Monitor] Removed completed download from client: {Title}", download.Title);
 
                 await TryRemoveCompletedFolderAsync(completedFolder, download.Title, db);
+                if (db != null)
+                {
+                    await db.DownloadQueue
+                        .Where(row => row.DownloadClientId == download.DownloadClientId &&
+                                      row.DownloadId == download.DownloadId)
+                        .ExecuteUpdateAsync(setters => setters.SetProperty(row => row.ClientCleanupCompleted, true));
+                    download.ClientCleanupCompleted = true;
+                }
             }
             catch (Exception ex)
             {
@@ -124,7 +133,8 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
     }
 
     private async Task<bool> CanRemoveTorrentAsync(
-        DownloadQueueItem download, DownloadClientService downloadClientService, SportarrDbContext? db, string? statusCategory)
+        DownloadQueueItem download, DownloadClientService downloadClientService, SportarrDbContext? db, string? statusCategory,
+        bool requireJobIdentity)
     {
         try
         {
@@ -159,7 +169,21 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
                 return false;
             }
 
-            if (HasReachedSeedLimit(status, indexer, download.IsPack)) return true;
+            var originalJobDeadline = download.CompletedAt ?? download.ImportedAt ??
+                download.Added.AddMinutes(5);
+            if (requireJobIdentity && status.AddedAt == null)
+            {
+                logger.LogWarning("[Enhanced Download Monitor] Client job creation time unavailable, leaving torrent in client: {Title}", download.Title);
+                return false;
+            }
+            if (status.AddedAt is { } clientAddedAt && clientAddedAt > originalJobDeadline)
+            {
+                logger.LogWarning("[Enhanced Download Monitor] Client job was added after the imported download, leaving torrent in client: {Title}", download.Title);
+                return false;
+            }
+
+            if (HasReachedSeedLimit(status, indexer, download.IsPack,
+                    download.CompletedAt ?? download.ImportedAt)) return true;
 
             logger.LogInformation(
                 "[Enhanced Download Monitor] Torrent still seeding, skipping removal: {Title} " +
@@ -177,7 +201,7 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
         }
     }
 
-    private static async Task<DownloadClientStatus?> GetTorrentStatusForCleanupAsync(
+    internal static async Task<DownloadClientStatus?> GetTorrentStatusForCleanupAsync(
         DownloadQueueItem download, DownloadClientService downloadClientService, string? preferredCategory)
     {
         var status = await downloadClientService.GetDownloadStatusAsync(
@@ -243,29 +267,19 @@ internal sealed class CompletedDownloadCleanup(IServiceProvider serviceProvider,
     internal static bool HasConfiguredSeedGoal(Indexer indexer, bool isPack) =>
         indexer.SeedRatio.GetValueOrDefault() > 0 || EffectiveSeedTime(indexer, isPack).GetValueOrDefault() > 0;
 
-    internal static bool HasReachedSeedLimit(DownloadClientStatus? status, Indexer indexer, bool isPack = false)
+    internal static bool HasReachedSeedLimit(DownloadClientStatus? status, Indexer indexer, bool isPack = false,
+        DateTime? recordedCompletion = null)
     {
-        if (status == null) return false;
+        if (status == null || !status.TorrentIsStopped || status.Progress < 100) return false;
 
-        // Check ratio limit
-        if (indexer.SeedRatio.HasValue && indexer.SeedRatio.Value > 0)
-        {
-            if ((status.Ratio ?? 0) < indexer.SeedRatio.Value)
-                return false;
-        }
+        var ratioMet = indexer.SeedRatio.GetValueOrDefault() > 0 &&
+            status.Ratio.HasValue && status.Ratio.Value >= indexer.SeedRatio!.Value;
 
-        // Packs can have a longer seed time than single events.
         var seedTime = EffectiveSeedTime(indexer, isPack);
-        if (seedTime.HasValue && seedTime.Value > 0)
-        {
-            var seedingMinutes = status.CompletedAt.HasValue
-                ? (DateTime.UtcNow - status.CompletedAt.Value).TotalMinutes
-                : 0;
+        var completedAt = status.CompletedAt ?? recordedCompletion;
+        var timeMet = seedTime is > 0 && completedAt is { } completed &&
+            (DateTime.UtcNow - completed).TotalMinutes >= seedTime.Value;
 
-            if (seedingMinutes < seedTime.Value)
-                return false;
-        }
-
-        return true;
+        return ratioMet || timeMet;
     }
 }

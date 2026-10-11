@@ -695,6 +695,12 @@ namespace Sportarr.Api.Migrations.Postgres.Migrations
                     b.Property<DateTime>("Added")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("ClientCleanupCheckedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("ClientCleanupCompleted")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Codec")
                         .HasColumnType("text");
 

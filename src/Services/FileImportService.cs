@@ -117,6 +117,8 @@ public class FileImportService : IFileImportService
         download.TimeRemaining = null;
         download.CompletedAt ??= importedAt;
         download.ImportedAt = importedAt;
+        download.ClientCleanupCompleted = false;
+        download.ClientCleanupCheckedAt = null;
         download.LastUpdate = importedAt;
         download.ErrorMessage = null;
     }

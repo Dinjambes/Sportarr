@@ -200,6 +200,8 @@ public class EnhancedDownloadMonitorService : BackgroundService
             .Where(DownloadMonitorEligibility.ActiveDownloads)
             .ToListAsync(cancellationToken);
 
+        await CleanupImportedTorrentsAsync(db, downloadClientService, cancellationToken);
+
         if (activeDownloads.Count == 0)
             return;
 
@@ -260,6 +262,81 @@ public class EnhancedDownloadMonitorService : BackgroundService
                 {
                     _logger.LogError(saveEx, "[Enhanced Download Monitor] Failed to save error state for download: {Title}", download.Title);
                 }
+            }
+        }
+    }
+
+    private async Task CleanupImportedTorrentsAsync(
+        SportarrDbContext db, DownloadClientService downloadClientService, CancellationToken cancellationToken)
+    {
+        var checkBefore = DateTime.UtcNow.AddMinutes(-5);
+        var pending = await db.DownloadQueue
+            .Include(download => download.DownloadClient)
+            .Where(download => download.Status == DownloadStatus.Imported &&
+                               !download.ClientCleanupCompleted &&
+                               download.DownloadClient != null &&
+                               download.DownloadClient.RemoveCompletedDownloads &&
+                               download.DownloadClient.Type != DownloadClientType.Sabnzbd &&
+                               download.DownloadClient.Type != DownloadClientType.NzbGet &&
+                               download.DownloadClient.Type != DownloadClientType.DecypharrUsenet &&
+                               download.DownloadClient.Type != DownloadClientType.NZBdav &&
+                               download.DownloadClient.Type != DownloadClientType.UsenetBlackhole &&
+                               download.DownloadClient.Type != DownloadClientType.SynologyDownloadStationUsenet &&
+                               (download.ClientCleanupCheckedAt == null ||
+                                download.ClientCleanupCheckedAt < checkBefore))
+            .OrderBy(download => download.ClientCleanupCheckedAt)
+            .Take(20)
+            .ToListAsync(cancellationToken);
+
+        var coordinator = _serviceProvider.GetRequiredService<DownloadOwnershipCoordinator>();
+        foreach (var download in pending)
+        {
+            using var ownershipDecision = coordinator.TryEnterExternalDecision(download.DownloadClientId, download.DownloadId);
+            if (ownershipDecision == null) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            await db.Entry(download).ReloadAsync(cancellationToken);
+            if (db.Entry(download).State == EntityState.Detached ||
+                download.Status != DownloadStatus.Imported || download.ClientCleanupCompleted) continue;
+
+            try
+            {
+                var statusCategory = !string.IsNullOrWhiteSpace(download.DownloadClient!.PostImportCategory)
+                    ? download.DownloadClient.PostImportCategory
+                    : download.GrabCategory;
+                var status = await CompletedDownloadCleanup.GetTorrentStatusForCleanupAsync(
+                    download, downloadClientService, statusCategory);
+                if (status == null)
+                {
+                    download.MissingFromClientCount++;
+                    if (download.MissingFromClientCount >= 3 &&
+                        (await downloadClientService.TestConnectionAsync(download.DownloadClient, writeProbe: false)).Success)
+                    {
+                        download.ClientCleanupCompleted = true;
+                        _logger.LogInformation("[Enhanced Download Monitor] Imported torrent is no longer in the client: {Title}", download.Title);
+                    }
+                    continue;
+                }
+
+                download.MissingFromClientCount = 0;
+                var originalJobDeadline = download.CompletedAt ?? download.ImportedAt ?? download.Added.AddMinutes(5);
+                if (status.AddedAt == null || status.AddedAt > originalJobDeadline)
+                {
+                    download.ClientCleanupCompleted = true;
+                    _logger.LogWarning("[Enhanced Download Monitor] Cannot verify the original imported torrent job, leaving it in the client: {Title}", download.Title);
+                    continue;
+                }
+
+                await new CompletedDownloadCleanup(_serviceProvider, _logger)
+                    .RunAsync(download, downloadClientService, db, requireJobIdentity: true);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Enhanced Download Monitor] Could not clean up imported torrent: {Title}", download.Title);
+            }
+            finally
+            {
+                download.ClientCleanupCheckedAt = DateTime.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
             }
         }
     }

@@ -671,6 +671,12 @@ namespace Sportarr.Api.Migrations
                     b.Property<DateTime>("Added")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("ClientCleanupCheckedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("ClientCleanupCompleted")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Codec")
                         .HasColumnType("TEXT");
 

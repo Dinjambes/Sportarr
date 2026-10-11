@@ -181,6 +181,8 @@ internal sealed class PackMemberLifecycleHarness : IAsyncDisposable
         public int ClientAdds { get; private set; }
         public string? JobPath { get; set; }
         public bool HideJobFromStatus { get; set; }
+        public string JobState { get; set; } = "pausedUP";
+        public long JobAddedOn { get; set; }
         private string _category = "sportarr";
         public System.Collections.Concurrent.ConcurrentQueue<string> Calls { get; } = new();
         public System.Collections.Concurrent.ConcurrentQueue<(string Method, string Path, Dictionary<string, string> Form)> Requests { get; } = new();
@@ -206,8 +208,9 @@ internal sealed class PackMemberLifecycleHarness : IAsyncDisposable
                 if (request.Method == HttpMethod.Get && path == "/api/v2/app/version") response = "5.0.0";
                 if (request.Method == HttpMethod.Get && path == "/api/v2/torrents/info")
                     response = HideJobFromStatus ? "[]" : System.Text.Json.JsonSerializer.Serialize(new[] { new { hash = "owned-pack-job",
-                        name = "NFL.2020.Week1.720p.WEB-DL.H264-PackLifecycle", state = "pausedUP", progress = 1,
-                        total_size = 12288, downloaded = 12288, content_path = JobPath, save_path = JobPath, category = _category, ratio = 1 } });
+                        name = "NFL.2020.Week1.720p.WEB-DL.H264-PackLifecycle", state = JobState, progress = 1,
+                        total_size = 12288, downloaded = 12288, content_path = JobPath, save_path = JobPath, category = _category, ratio = 1,
+                        added_on = JobAddedOn } });
                 if (request.Method == HttpMethod.Get && path == "/api/v2/torrents/categories") response = "{\"sportarr\":{},\"imported\":{}}";
                 if (request.Method == HttpMethod.Post && path == "/api/v2/torrents/setCategory")
                 { _category = form.GetValueOrDefault("category", ""); response = ""; }

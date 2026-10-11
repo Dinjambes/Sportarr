@@ -18,15 +18,15 @@ beforeEach(() => {
 });
 
 describe('download client seeding defaults', () => {
-  it('keeps completed torrents when a new qBittorrent client is selected', async () => {
+  it('removes completed torrents after the client stops at its seed goal', async () => {
     const user = userEvent.setup();
     renderWithProviders(<DownloadClientsSettings />);
 
     await user.click(await screen.findByRole('button', { name: 'Add Download Client' }));
     await user.click(screen.getByRole('button', { name: /qBittorrent/i }));
 
-    expect(screen.getByRole('checkbox', { name: /Remove Completed Downloads/i })).not.toBeChecked();
-    expect(screen.getByText(/With no goal or unmet goals, Sportarr leaves the torrent in the client/i)).toBeVisible();
+    expect(screen.getByRole('checkbox', { name: /Remove Completed Downloads/i })).toBeChecked();
+    expect(screen.getByText(/With no goal or while all goals remain unmet, Sportarr leaves the torrent in the client/i)).toBeVisible();
   });
 
   it('removes completed Usenet downloads by default', async () => {

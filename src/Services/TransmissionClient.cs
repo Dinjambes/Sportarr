@@ -563,6 +563,10 @@ public class TransmissionClient
                 Ratio = torrent.DownloadedEver > 0
                     ? (double)torrent.UploadedEver / torrent.DownloadedEver
                     : 0,
+                TorrentIsStopped = torrent.PercentDone >= 1.0 && torrent.Status == 0,
+                AddedAt = torrent.AddedDate > 0
+                    ? DateTimeOffset.FromUnixTimeSeconds(torrent.AddedDate).UtcDateTime
+                    : null,
                 CompletedAt = torrent.DoneDate > 0
                     ? DateTimeOffset.FromUnixTimeSeconds(torrent.DoneDate).UtcDateTime
                     : null,

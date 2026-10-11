@@ -534,8 +534,7 @@ export default function DownloadClientsSettings({ showAdvanced = false }: Downlo
       password: '',
       apiKey: '',
       category: 'sportarr',
-      // Keep torrent data available for seeding by default.
-      removeCompletedDownloads: getProtocol(type) === 'usenet',
+      removeCompletedDownloads: true,
       removeFailedDownloads: true,
       postImportMode: 0,
       blackholeFolder: '',
@@ -1875,8 +1874,13 @@ export default function DownloadClientsSettings({ showAdvanced = false }: Downlo
                             Remove the completed job and its source files after import.
                             {getProtocol(formData.type as number) === 'torrent' && (
                               <span className="text-yellow-500 ml-1">
-                                For torrents, removal runs only when every configured indexer seed goal is met at import time.
-                                With no goal or unmet goals, Sportarr leaves the torrent in the client.
+                                For torrents, removal waits until the client stops the job and a configured indexer seed goal is met.
+                                With no goal or while all goals remain unmet, Sportarr leaves the torrent in the client.
+                                {(formData.type === 3 || formData.type === 12) && (
+                                  <span className="block mt-1">
+                                    This client does not report when a job was added. Sportarr can remove it only if it has stopped by import time.
+                                  </span>
+                                )}
                               </span>
                             )}
                           </p>
