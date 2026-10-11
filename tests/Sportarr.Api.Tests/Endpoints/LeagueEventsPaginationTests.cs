@@ -1,6 +1,8 @@
 using FluentAssertions;
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Sportarr.Api.Data;
@@ -41,6 +43,33 @@ public class LeagueEventsPaginationTests
         {
             await Db.DisposeAsync();
             await _connection.DisposeAsync();
+        }
+    }
+
+    private sealed class PausePageQueryInterceptor : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource<bool> _pageRequested = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _releasePage = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _pause;
+
+        public Task PageRequested => _pageRequested.Task;
+
+        public void PauseNextPage() => Interlocked.Exchange(ref _pause, 1);
+
+        public void ReleasePage() => _releasePage.TrySetResult(true);
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("LIMIT", StringComparison.OrdinalIgnoreCase) &&
+                Interlocked.Exchange(ref _pause, 0) == 1)
+            {
+                _pageRequested.TrySetResult(true);
+                await _releasePage.Task.WaitAsync(cancellationToken);
+            }
+
+            return result;
         }
     }
 
@@ -272,6 +301,62 @@ public class LeagueEventsPaginationTests
         seen.Should().Equal(expected,
             "the walk must follow EventDate desc then Id desc, matching the unpaged membership");
     }
+
+    [Fact]
+    public async Task UnfilteredPage_CountAndRowsUseTheSameSnapshot()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "sportarr-league-page-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var pause = new PausePageQueryInterceptor();
+        try
+        {
+            var connectionString = $"Data Source={Path.Combine(directory, "events.db")};Pooling=False";
+            var readOptions = new DbContextOptionsBuilder<SportarrDbContext>()
+                .UseSqlite(connectionString)
+                .AddInterceptors(pause)
+                .Options;
+            await using var readDb = new SportarrDbContext(readOptions);
+            await readDb.Database.EnsureCreatedAsync();
+            await readDb.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL");
+            var leagueId = await SeedKeepAllLeagueAsync(readDb, 1000);
+
+            pause.PauseNextPage();
+            var pageTask = LeagueEndpoints.GetUnfilteredEventPageAsync(readDb, leagueId, null, 1, 1000);
+            await pause.PageRequested.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await using (var writer = new SportarrDbContext(new DbContextOptionsBuilder<SportarrDbContext>()
+                .UseSqlite(connectionString)
+                .Options))
+            {
+                writer.Events.Add(NewerEvent(leagueId));
+                await writer.SaveChangesAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+
+            pause.ReleasePage();
+            var page = await pageTask;
+            page.TotalRecords.Should().Be(1000);
+            page.Records.Should().HaveCount(1000);
+            page.Records.Should().Contain(e => e.Id == 1,
+                "a concurrent insert must not displace an existing event from the only page");
+            page.Records.Should().NotContain(e => e.Id == 1001);
+
+        }
+        finally
+        {
+            pause.ReleasePage();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static Event NewerEvent(int leagueId) => new()
+    {
+        Id = 1001,
+        Title = "New game",
+        Sport = "Basketball",
+        LeagueId = leagueId,
+        Season = "2025-26",
+        EventDate = new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+    };
 
     [Fact]
     public async Task EnvelopeMath_CountsAndClampsStayExact()

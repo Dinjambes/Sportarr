@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Sportarr.Api.Data;
@@ -11,6 +12,7 @@ using Sportarr.Api.Models;
 using Sportarr.Api.Models.Requests;
 using Sportarr.Api.Services;
 using Sportarr.Api.Services.Interfaces;
+using System.Data;
 using System.Collections.Concurrent;
 using System.Text.Json;
 
@@ -465,9 +467,9 @@ app.MapGet("/api/leagues/{id:int}/events", async (int id, int? page, int? pageSi
         if (showAll == true || league.KeepAllEvents)
         {
             // Unfiltered requests can page in the database.
-            var (countQuery, pageQuery) = ComposeUnfilteredEventPageQueries(db, id, season, currentPage, size);
-            var totalRecords = await countQuery.CountAsync();
-            var pageEvents = await pageQuery.ToListAsync();
+            var unfilteredSlice = await GetUnfilteredEventPageAsync(db, id, season, currentPage, size);
+            var totalRecords = unfilteredSlice.TotalRecords;
+            var pageEvents = unfilteredSlice.Records;
 
             logger.LogDebug("[LEAGUES] Showing {Filtered}/{Total} events (showAll: {ShowAll})",
                 pageEvents.Count, totalRecords, showAll == true);
@@ -3066,6 +3068,42 @@ app.MapPost("/api/leagues/move/bulk", async (BulkMoveLeaguesRequest request, Lea
     {
         public required int TotalRecords { get; init; }
         public required List<Event> Records { get; init; }
+    }
+
+    internal static async Task<LeagueEventsPageSlice> GetUnfilteredEventPageAsync(
+        SportarrDbContext db, int leagueId, string? season, int currentPage, int size)
+    {
+        var (countQuery, pageQuery) = ComposeUnfilteredEventPageQueries(db, leagueId, season, currentPage, size);
+        async Task<LeagueEventsPageSlice> ReadPageAsync()
+        {
+            var totalRecords = await countQuery.CountAsync();
+            var records = await pageQuery.ToListAsync();
+            return new LeagueEventsPageSlice { TotalRecords = totalRecords, Records = records };
+        }
+
+        if (db.Database.IsSqlite())
+        {
+            await db.Database.OpenConnectionAsync();
+            try
+            {
+                var connection = (SqliteConnection)db.Database.GetDbConnection();
+                // A deferred transaction lets WAL writers proceed during the page read.
+                await using var sqliteTransaction = connection.BeginTransaction(IsolationLevel.Serializable, deferred: true);
+                await using var transaction = await db.Database.UseTransactionAsync(sqliteTransaction);
+                var page = await ReadPageAsync();
+                await transaction!.CommitAsync();
+                return page;
+            }
+            finally
+            {
+                await db.Database.CloseConnectionAsync();
+            }
+        }
+
+        await using var postgresTransaction = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead);
+        var result = await ReadPageAsync();
+        await postgresTransaction.CommitAsync();
+        return result;
     }
 
     // The Id tiebreaker keeps page boundaries stable for tied dates.
