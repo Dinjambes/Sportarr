@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Http;
 using Polly;
 using Polly.Extensions.Http;
 using Sportarr.Api.Data;
@@ -29,6 +30,7 @@ public static class ServiceCollectionExtensions
 
     public static IServiceCollection AddSportarrHttpClients(this IServiceCollection services)
     {
+        services.AddSingleton<IHttpMessageHandlerBuilderFilter, CertificateValidationFilter>();
         // Default named HttpClient used by services that don't configure their own.
         // PooledConnectionLifetime keeps DNS fresh (Docker container names rotate),
         // timeout prevents hung calls from pinning thread pool threads.
@@ -93,6 +95,7 @@ public static class ServiceCollectionExtensions
 
         // League/event poster and fanart downloads for the local Kodi NFO writer.
         services.AddHttpClient("MetadataImageClient")
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler())
             .ConfigureHttpClient(client =>
             {
                 client.Timeout = TimeSpan.FromSeconds(30);
@@ -101,6 +104,7 @@ public static class ServiceCollectionExtensions
 
         // GitHub API lookups (update checks, plugin release downloads).
         services.AddHttpClient("GitHub")
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler())
             .ConfigureHttpClient(client =>
             {
                 client.Timeout = TimeSpan.FromSeconds(30);
@@ -130,6 +134,7 @@ public static class ServiceCollectionExtensions
             .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(60));
 
         services.AddHttpClient("TrashGuides")
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler())
             .ConfigureHttpClient(client =>
             {
                 client.Timeout = TimeSpan.FromSeconds(30);
@@ -187,6 +192,13 @@ public static class ServiceCollectionExtensions
                     {
                         RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true
                     }
+                });
+            }
+            else
+            {
+                builder.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+                {
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2)
                 });
             }
         }

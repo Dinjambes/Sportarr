@@ -210,7 +210,7 @@ public class DownloadClientService : IDownloadClientService
         return _clientCache.GetOrCreate(key, entry =>
         {
             entry.SetOptions(GetCacheEntryOptions());
-            return new RTorrentClient(CreateHttpClient(), _loggerFactory.CreateLogger<RTorrentClient>(), _pathMappingService);
+            return new RTorrentClient(CreateHttpClient(), _loggerFactory.CreateLogger<RTorrentClient>(), _pathMappingService, _configService);
         })!;
     }
 
