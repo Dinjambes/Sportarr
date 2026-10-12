@@ -499,8 +499,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                 // an unmonitored pre-lims release could be grabbed while the monitored main
                 // card is ignored. When the event (or, by inheritance, its league) monitors
                 // only specific parts, drop releases whose detected part is not monitored.
-                // Full-event files (no detected part) are kept; manual searches are untouched
-                // so an explicit user search still sees everything.
+                // Packs and full-event releases remain eligible. Manual searches still show every part.
                 if (!isManualSearch && string.IsNullOrEmpty(part) &&
                     config.EnableMultiPartEpisodes && EventPartDetector.IsFightingSport(evt.Sport ?? ""))
                 {
@@ -514,10 +513,17 @@ public class AutomaticSearchService : IAutomaticSearchService
                         var beforeCount = allReleases.Count;
                         allReleases = allReleases.Where(r =>
                         {
-                            var detected = _partDetector.DetectPart(
-                                r.Title, evt.Sport ?? "Fighting", evt.Title, evt.League?.Name);
-                            // Keep full-event files (no part) and monitored parts; drop the rest.
-                            return detected == null || monitoredSet.Contains(detected.SegmentName);
+                            if (r.IsPack)
+                                return true;
+                            var identity = Helpers.PartIdentityResolver.Resolve(
+                                null, r.Title, null, evt.Sport, evt.Title, evt.League?.Name,
+                                config.EnableMultiPartEpisodes);
+                            var releasePart = EffectivePart(identity, null, evt, r.Title, false);
+                            if (identity.Kind is Helpers.PartIdentityKind.Ambiguous or Helpers.PartIdentityKind.UnsupportedLabel)
+                                releasePart = _partDetector.DetectPart(
+                                    r.Title, evt.Sport ?? string.Empty, evt.Title, evt.League?.Name)?.SegmentName;
+                            return releasePart == null || EventPartDetector.IsFullEvent(releasePart) ||
+                                   monitoredSet.Contains(releasePart);
                         }).ToList();
 
                         var dropped = beforeCount - allReleases.Count;
@@ -666,10 +672,10 @@ public class AutomaticSearchService : IAutomaticSearchService
                     {
                         var releasePart = EffectivePart(Helpers.PartIdentityResolver.Resolve(
                             part, release.Title, null, evt.Sport, evt.Title, evt.League?.Name,
-                            config.EnableMultiPartEpisodes, release.IsPack), part);
+                            config.EnableMultiPartEpisodes, release.IsPack), part, evt, release.Title, release.IsPack);
                         var heldForLift = releasePart == null
                             ? heldFiles.FirstOrDefault(f => f.PartName == null)
-                            : HeldFileForPart(heldFiles, releasePart);
+                            : HeldFileForPart(heldFiles, releasePart, evt);
                         if (releasePart == null && heldFiles.Any(f => f.PartName != null))
                             continue;
                         if (!string.IsNullOrEmpty(releasePart) &&
@@ -906,11 +912,10 @@ public class AutomaticSearchService : IAutomaticSearchService
                 EventPartDetector.EventUsesMultiPart(evt.Title, evt.Sport ?? string.Empty, evt.League?.Name);
             if (isIncompletePartlessSearch)
             {
-                var presentParts = (await _db.EventFiles.AsNoTracking()
-                    .Where(f => f.EventId == eventId && f.Exists && f.PartNumber != null)
-                    .Select(f => f.PartNumber)
-                    .ToListAsync()).Where(n => n.HasValue).Select(n => n!.Value).ToHashSet();
-                if (presentParts.Count > 0)
+                var presentPartFiles = await _db.EventFiles.AsNoTracking()
+                    .Where(f => f.EventId == eventId && f.Exists && (f.PartName != null || f.PartNumber != null))
+                    .ToListAsync();
+                if (presentPartFiles.Count > 0)
                 {
                     var beforeCount = matchedReleases.Count;
                     matchedReleases = matchedReleases.Where(release =>
@@ -918,8 +923,9 @@ public class AutomaticSearchService : IAutomaticSearchService
                         var identity = Helpers.PartIdentityResolver.Resolve(
                             null, release.Title, null, evt.Sport, evt.Title, evt.League?.Name,
                             config.EnableMultiPartEpisodes, release.IsPack);
-                        return identity.Kind != Helpers.PartIdentityKind.InferredPart ||
-                               identity.Part == null || !presentParts.Contains(identity.Part.PartNumber);
+                        var releasePart = EffectivePart(identity, null, evt, release.Title, release.IsPack);
+                        return releasePart == null || EventPartDetector.IsFullEvent(releasePart) ||
+                               HeldFileForPart(presentPartFiles, releasePart, evt) == null;
                     }).ToList();
                     if (matchedReleases.Count < beforeCount)
                         _logger.LogInformation("[Automatic Search] Skipped {Count} release(s) for parts already present: {Title}",
@@ -964,7 +970,8 @@ public class AutomaticSearchService : IAutomaticSearchService
                             var identity = Helpers.PartIdentityResolver.Resolve(
                                 null, r.Title, null, evt.Sport, evt.Title, evt.League?.Name,
                                 config.EnableMultiPartEpisodes, r.IsPack);
-                            if (identity.Kind != Helpers.PartIdentityKind.InferredPart)
+                            var releasePart = EffectivePart(identity, null, evt, r.Title, r.IsPack);
+                            if (releasePart == null || EventPartDetector.IsFullEvent(releasePart))
                                 return true;
                         }
 
@@ -1125,6 +1132,25 @@ public class AutomaticSearchService : IAutomaticSearchService
 
             if (partlessMultiPartRequest && !isManualSearch)
             {
+                // A release without a part can otherwise be compared with another part's file.
+                var heldReleaseTitles = (await _db.EventFiles.AsNoTracking()
+                        .HeldFiles(eventId)
+                        .Select(f => new { f.ReleaseTitle, f.OriginalTitle })
+                        .ToListAsync())
+                    .SelectMany(f => new[] { f.ReleaseTitle, f.OriginalTitle })
+                    .OfType<string>()
+                    .Where(title => !string.IsNullOrWhiteSpace(title))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                matchedReleases = matchedReleases
+                    .Where(release => release.IsPack || !heldReleaseTitles.Contains(release.Title))
+                    .ToList();
+                if (matchedReleases.Count == 0)
+                {
+                    result.Success = false;
+                    result.Message = "Only releases already held for this event were found";
+                    return result;
+                }
+
                 var failuresByPart = new Dictionary<string, DownloadQueueItem?>(StringComparer.OrdinalIgnoreCase);
                 var availableReleases = new List<ReleaseSearchResult>();
                 string? firstRetryRefusal = null;
@@ -1133,12 +1159,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                     var identity = Helpers.PartIdentityResolver.Resolve(
                         part, release.Title, null, evt.Sport, evt.Title, evt.League?.Name,
                         config.EnableMultiPartEpisodes, release.IsPack);
-                    var releasePart = identity.Kind switch
-                    {
-                        Helpers.PartIdentityKind.NotApplicable => null,
-                        Helpers.PartIdentityKind.CompleteEventLabel => EventPartDetector.FullEventSegmentName,
-                        _ => identity.Part?.SegmentName ?? part
-                    };
+                    var releasePart = EffectivePart(identity, part, evt, release.Title, release.IsPack);
                     var partKey = releasePart ?? string.Empty;
                     if (!failuresByPart.TryGetValue(partKey, out var failure))
                     {
@@ -1193,7 +1214,7 @@ public class AutomaticSearchService : IAutomaticSearchService
             var acquiredIdentity = Helpers.PartIdentityResolver.Resolve(
                 part, bestRelease.Title, null, evt.Sport, evt.Title, evt.League?.Name,
                 config.EnableMultiPartEpisodes, bestRelease.IsPack);
-            var effectivePart = EffectivePart(acquiredIdentity, part);
+            var effectivePart = EffectivePart(acquiredIdentity, part, evt, bestRelease.Title, bestRelease.IsPack);
             var isFullEventPart = EventPartDetector.IsFullEvent(effectivePart);
 
             if (partlessMultiPartRequest)
@@ -1264,7 +1285,7 @@ public class AutomaticSearchService : IAutomaticSearchService
             // 1. A full event file exists (PartName is null) - full event covers all parts, skip download
             // 2. A file for THIS specific part exists - do quality comparison
             // 3. No file for this part exists - allow download (other parts may exist)
-            if (evt.HasFile || acquiredIdentity.Part != null)
+            if (evt.HasFile || (effectivePart != null && !isFullEventPart))
             {
                 // Get existing files for this event
                 var existingFiles = await _db.EventFiles.AsNoTracking()
@@ -1277,7 +1298,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                 {
                     // Searching for a specific part - check for full event file OR matching part file
                     var fullEventFile = existingFiles.FirstOrDefault(f => f.PartName == null);
-                    var partSpecificFile = HeldFileForPart(existingFiles, effectivePart);
+                    var partSpecificFile = HeldFileForPart(existingFiles, effectivePart, evt);
 
                     if (fullEventFile != null)
                     {
@@ -1306,7 +1327,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                 {
                     // Not searching for a specific part - use event-level quality (legacy behavior)
                     // Or use the first/best existing file
-                    relevantFile = HeldFileForPart(existingFiles, effectivePart);
+                    relevantFile = HeldFileForPart(existingFiles, effectivePart, evt);
                     if (relevantFile != null)
                     {
                         _logger.LogInformation("[Automatic Search] Event already has file: {Quality} (Part: {Part})",
@@ -2132,10 +2153,13 @@ public class AutomaticSearchService : IAutomaticSearchService
     /// The part a release would fill: the part named in its title, or the
     /// requested part when the title names none.
     /// </summary>
-    private static string? EffectivePart(Helpers.PartIdentityResolution identity, string? requestedPart) => identity.Kind switch
+    private string? EffectivePart(Helpers.PartIdentityResolution identity, string? requestedPart, Event evt,
+        string releaseTitle, bool isPack) => identity.Kind switch
     {
         Helpers.PartIdentityKind.NotApplicable => null,
         Helpers.PartIdentityKind.CompleteEventLabel => EventPartDetector.FullEventSegmentName,
+        Helpers.PartIdentityKind.Unlabelled when string.IsNullOrEmpty(requestedPart) && !isPack =>
+            _partDetector.DetectPart(releaseTitle, evt.Sport ?? string.Empty, evt.Title, evt.League?.Name)?.SegmentName,
         _ => identity.Part?.SegmentName ?? requestedPart
     };
 
@@ -2144,10 +2168,19 @@ public class AutomaticSearchService : IAutomaticSearchService
     /// part's file, or for no part (or the full event) the first held file,
     /// which HeldFiles orders whole-event first.
     /// </summary>
-    private static EventFile? HeldFileForPart(IEnumerable<EventFile> heldFiles, string? effectivePart) =>
-        !string.IsNullOrEmpty(effectivePart) && !EventPartDetector.IsFullEvent(effectivePart)
-            ? heldFiles.FirstOrDefault(f => string.Equals(f.PartName, effectivePart, StringComparison.OrdinalIgnoreCase))
-            : heldFiles.FirstOrDefault();
+    private static EventFile? HeldFileForPart(IEnumerable<EventFile> heldFiles, string? effectivePart, Event evt)
+    {
+        if (string.IsNullOrEmpty(effectivePart) || EventPartDetector.IsFullEvent(effectivePart))
+            return heldFiles.FirstOrDefault();
+
+        var partNumber = EventPartDetector.GetSegmentDefinitions(evt.Sport ?? string.Empty, evt.Title, evt.League?.Name)
+            .FirstOrDefault(part => string.Equals(part.Name, effectivePart, StringComparison.OrdinalIgnoreCase))?.PartNumber;
+        return heldFiles.FirstOrDefault(file =>
+                   string.Equals(file.PartName, effectivePart, StringComparison.OrdinalIgnoreCase))
+               ?? (partNumber > 0
+                   ? heldFiles.FirstOrDefault(file => file.PartNumber == partNumber)
+                   : null);
+    }
 
     /// <summary>
     /// Extract resolution from quality string (handles multiple formats)
