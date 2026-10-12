@@ -480,33 +480,18 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
             }
         }
 
-        // Find events with duplicate Exists=true file records (same event, same part or both null)
-        // Keep the newest record (highest Id) and remove the rest
+        // Keep both rows until the files are reconciled. Dropping one row leaves its video untracked.
         var duplicateFiles = await db.EventFiles
             .Where(ef => ef.Exists)
             .GroupBy(ef => new { ef.EventId, ef.PartNumber })
             .Where(g => g.Count() > 1)
-            .Select(g => new { g.Key.EventId, g.Key.PartNumber, KeepId = g.Max(f => f.Id) })
+            .Select(g => new { g.Key.EventId, g.Key.PartNumber, Count = g.Count() })
             .ToListAsync(cancellationToken);
 
-        if (duplicateFiles.Count > 0)
+        foreach (var duplicate in duplicateFiles)
         {
-            var keepIds = duplicateFiles.Select(d => d.KeepId).ToHashSet();
-            var eventPartPairs = duplicateFiles.Select(d => new { d.EventId, d.PartNumber }).ToList();
-
-            // Remove all but the newest record for each duplicate group
-            foreach (var dup in duplicateFiles)
-            {
-                var dupsRemoved = await db.EventFiles
-                    .Where(ef => ef.EventId == dup.EventId && ef.PartNumber == dup.PartNumber && ef.Exists && ef.Id != dup.KeepId)
-                    .ExecuteDeleteAsync(cancellationToken);
-
-                if (dupsRemoved > 0)
-                {
-                    _logger.LogInformation("[Disk Scan] Removed {Count} duplicate EventFile records for EventId={EventId} PartNumber={Part}",
-                        dupsRemoved, dup.EventId, dup.PartNumber?.ToString() ?? "null");
-                }
-            }
+            _logger.LogWarning("[Disk Scan] Event {EventId} has {Count} tracked files for part {Part}",
+                duplicate.EventId, duplicate.Count, duplicate.PartNumber?.ToString() ?? "full event");
         }
 
         // Keep event completeness aligned with the parts still on disk.

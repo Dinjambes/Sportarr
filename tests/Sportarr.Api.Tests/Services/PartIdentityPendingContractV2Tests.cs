@@ -15,6 +15,218 @@ namespace Sportarr.Api.Tests.Services;
 
 public class PartIdentityPendingContractV2Tests
 {
+    [Fact]
+    public async Task DiskPendingAcceptSettlesPathAlreadyTrackedForTheSameEvent()
+    {
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(multipart: false);
+        var directory = NewDirectory();
+        try
+        {
+            var path = Path.Combine(directory, "UFC.9999.720p.WEB-DL.mkv");
+            await File.WriteAllBytesAsync(path, new byte[4096]);
+            rig.Db.EventFiles.Add(new EventFile
+            {
+                EventId = rig.Event.Id, FilePath = path, Quality = "WEBDL-720p", Exists = false
+            });
+            var pending = new PendingImport
+            {
+                DownloadId = "disk-already-tracked", Title = Path.GetFileName(path),
+                FilePath = path, Size = 4096, Quality = "WEBDL-720p",
+                SuggestedEventId = rig.Event.Id
+            };
+            rig.Db.PendingImports.Add(pending);
+            await rig.Db.SaveChangesAsync();
+
+            await using var app = await CreatePendingHost(rig);
+            using var response = await app.GetTestClient()
+                .PostAsJsonAsync($"/api/pending-imports/{pending.Id}/accept",
+                    new { metadataOverrides = new { releaseGroup = "corrected" } });
+
+            response.IsSuccessStatusCode.Should().BeTrue(await response.Content.ReadAsStringAsync());
+            var linked = await rig.Db.EventFiles.SingleAsync();
+            linked.Exists.Should().BeTrue();
+            linked.ReleaseGroup.Should().Be("corrected");
+            rig.Event.HasFile.Should().BeTrue();
+            rig.Event.FilePath.Should().Be(path);
+            rig.Event.FileSize.Should().Be(4096);
+            rig.Event.Quality.Should().Be("WEBDL-720p");
+            pending.Status.Should().Be(PendingImportStatus.Completed);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task DiskPendingAcceptRefusesLowerQualityWithoutCreatingSecondFile()
+    {
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(multipart: false);
+        var directory = NewDirectory();
+        try
+        {
+            var heldPath = Path.Combine(directory, "held.1080p.WEB-DL.mkv");
+            var pendingPath = Path.Combine(directory, "new.720p.HDTV.mkv");
+            await File.WriteAllBytesAsync(heldPath, new byte[4096]);
+            await File.WriteAllBytesAsync(pendingPath, new byte[4096]);
+            rig.Db.EventFiles.Add(new EventFile
+            {
+                EventId = rig.Event.Id, FilePath = heldPath, Quality = "WEBDL-1080p", Exists = true
+            });
+            var pending = new PendingImport
+            {
+                DownloadId = "disk-lower-quality", Title = Path.GetFileName(pendingPath),
+                FilePath = pendingPath, Size = 4096, Quality = "HDTV-720p",
+                SuggestedEventId = rig.Event.Id
+            };
+            rig.Db.PendingImports.Add(pending);
+            await rig.Db.SaveChangesAsync();
+
+            await using var app = await CreatePendingHost(rig);
+            using var response = await app.GetTestClient()
+                .PostAsync($"/api/pending-imports/{pending.Id}/accept", null);
+
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            (await rig.Db.EventFiles.SingleAsync()).FilePath.Should().Be(heldPath);
+            pending.Status.Should().Be(PendingImportStatus.Pending);
+            File.Exists(heldPath).Should().BeTrue();
+            File.Exists(pendingPath).Should().BeTrue();
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task DiskPendingAcceptLinksCompletedDvrCaptureAndSettlesRecording()
+    {
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(multipart: false);
+        var directory = NewDirectory();
+        try
+        {
+            var path = Path.Combine(directory, "UFC.9999.1080p.ts");
+            await File.WriteAllBytesAsync(path, new byte[4096]);
+            var source = new IptvSource { Name = "Fixture", Url = "https://iptv.invalid/list" };
+            var channel = new IptvChannel
+            {
+                Source = source, Name = "Fixture FHD", StreamUrl = "https://iptv.invalid/stream"
+            };
+            var recording = new DvrRecording
+            {
+                EventId = rig.Event.Id, Channel = channel, Title = rig.Event.Title,
+                Status = DvrRecordingStatus.Completed, OutputPath = path,
+                Quality = "HDTV-1080p", QualityScore = 510, VideoCodec = "H264",
+                ScheduledStart = DateTime.UtcNow.AddHours(-2),
+                ScheduledEnd = DateTime.UtcNow.AddHours(-1)
+            };
+            var pending = new PendingImport
+            {
+                DownloadId = "disk-dvr-capture", Title = Path.GetFileName(path),
+                FilePath = path, Size = 4096, Quality = "1080p",
+                SuggestedEventId = rig.Event.Id
+            };
+            rig.Db.DvrRecordings.Add(recording);
+            rig.Db.PendingImports.Add(pending);
+            await rig.Db.SaveChangesAsync();
+
+            await using var app = await CreatePendingHost(rig);
+            using var response = await app.GetTestClient()
+                .PostAsync($"/api/pending-imports/{pending.Id}/accept", null);
+
+            response.IsSuccessStatusCode.Should().BeTrue(await response.Content.ReadAsStringAsync());
+            var linked = await rig.Db.EventFiles.SingleAsync();
+            linked.FilePath.Should().Be(path);
+            linked.Quality.Should().Be("HDTV-1080p");
+            linked.QualityScore.Should().Be(510);
+            linked.Codec.Should().Be("H264");
+            linked.Source.Should().Be("IPTV");
+            linked.IsIptvRecording.Should().BeTrue();
+            recording.Status.Should().Be(DvrRecordingStatus.Imported);
+            recording.ImportedAt.Should().NotBeNull();
+            pending.Status.Should().Be(PendingImportStatus.Completed);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task DiskPendingAcceptReplacesLowerQualityTrackedPart()
+    {
+        const string mediaRoot = "/data/e2e-lib/issue348";
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(
+            multipart: false, mediaRoot: mediaRoot);
+        var directory = NewDirectory(mediaRoot);
+        try
+        {
+            var heldPath = Path.Combine(directory, "held.720p.HDTV.mkv");
+            var pendingPath = Path.Combine(directory, "new.1080p.WEB-DL.mkv");
+            await File.WriteAllBytesAsync(heldPath, Enumerable.Repeat((byte)'h', 4096).ToArray());
+            await File.WriteAllBytesAsync(pendingPath, Enumerable.Repeat((byte)'n', 4096).ToArray());
+            rig.Db.EventFiles.Add(new EventFile
+            {
+                EventId = rig.Event.Id, FilePath = heldPath, Quality = "HDTV-720p", Exists = true
+            });
+            var pending = new PendingImport
+            {
+                DownloadId = "disk-higher-quality", Title = Path.GetFileName(pendingPath),
+                FilePath = pendingPath, Size = 4096, Quality = "WEBDL-1080p",
+                SuggestedEventId = rig.Event.Id
+            };
+            rig.Db.PendingImports.Add(pending);
+            await rig.Db.SaveChangesAsync();
+
+            await using var app = await CreatePendingHost(rig);
+            using var response = await app.GetTestClient()
+                .PostAsync($"/api/pending-imports/{pending.Id}/accept", null);
+
+            response.IsSuccessStatusCode.Should().BeTrue(await response.Content.ReadAsStringAsync());
+            pending.Status.Should().Be(PendingImportStatus.Completed);
+            var linked = await rig.Db.EventFiles.SingleAsync();
+            linked.Quality.Should().Be("WEBDL-1080p");
+            (await File.ReadAllBytesAsync(linked.FilePath)).Should().OnlyContain(value => value == (byte)'n');
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task DiskPendingUpgradeFailureRestoresTheTrackedVideo()
+    {
+        const string mediaRoot = "/data/e2e-lib/issue348";
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(
+            multipart: false, mediaRoot: mediaRoot);
+        var directory = NewDirectory(mediaRoot);
+        try
+        {
+            var heldPath = Path.Combine(directory, "held.720p.HDTV.mkv");
+            var incomingDirectory = Path.Combine(directory, "incoming");
+            Directory.CreateDirectory(incomingDirectory);
+            var pendingPath = Path.Combine(incomingDirectory, "new.1080p.WEB-DL.mkv");
+            var heldBytes = Enumerable.Repeat((byte)'h', 4096).ToArray();
+            await File.WriteAllBytesAsync(heldPath, heldBytes);
+            await File.WriteAllBytesAsync(pendingPath, Enumerable.Repeat((byte)'n', 4096).ToArray());
+            var blockedRoot = Path.Combine(directory, "blocked-root");
+            await File.WriteAllTextAsync(blockedRoot, "not a directory");
+            (await rig.Db.RootFolders.SingleAsync()).Path = blockedRoot;
+            rig.Db.EventFiles.Add(new EventFile
+            {
+                EventId = rig.Event.Id, FilePath = heldPath, Quality = "HDTV-720p", Exists = true
+            });
+            var pending = new PendingImport
+            {
+                DownloadId = "disk-failed-upgrade", Title = Path.GetFileName(pendingPath),
+                FilePath = pendingPath, Size = 4096, Quality = "WEBDL-1080p",
+                SuggestedEventId = rig.Event.Id
+            };
+            rig.Db.PendingImports.Add(pending);
+            await rig.Db.SaveChangesAsync();
+
+            await using var app = await CreatePendingHost(rig);
+            using var response = await app.GetTestClient()
+                .PostAsync($"/api/pending-imports/{pending.Id}/accept", null);
+
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            pending.Status.Should().Be(PendingImportStatus.Pending);
+            (await rig.Db.EventFiles.SingleAsync()).FilePath.Should().Be(heldPath);
+            (await File.ReadAllBytesAsync(heldPath)).Should().Equal(heldBytes);
+            File.Exists(pendingPath).Should().BeTrue();
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
     [Theory]
     [InlineData("copy", true)]
     [InlineData("auto", false)]
@@ -614,6 +826,7 @@ public class PartIdentityPendingContractV2Tests
         builder.WebHost.UseTestServer(); builder.Logging.ClearProviders();
         builder.Services.AddSingleton(rig.Db);
         builder.Services.AddSingleton(rig.Services.GetRequiredService<FileImportService>());
+        builder.Services.AddSingleton(rig.Services.GetRequiredService<LibraryImportService>());
         builder.Services.AddSingleton(rig.Services.GetRequiredService<ConfigService>());
         builder.Services.AddSingleton(rig.Services.GetRequiredService<EventPartDetector>());
         builder.Services.AddSingleton(rig.Services.GetRequiredService<DownloadClientService>());

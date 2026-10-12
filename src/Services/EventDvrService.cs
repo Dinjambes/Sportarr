@@ -523,6 +523,45 @@ public class EventDvrService
             return false;
         }
 
+        var pathOwner = await _db.EventFiles
+            .FirstOrDefaultAsync(file => file.FilePath == recording.OutputPath);
+        if (pathOwner != null)
+        {
+            if (pathOwner.EventId != recording.EventId || pathOwner.PartName != recording.PartName)
+            {
+                _logger.LogWarning("[EventDVR] Recording {RecordingId} output is linked to a different event part", recordingId);
+                return false;
+            }
+
+            pathOwner.Source = "IPTV";
+            pathOwner.IsIptvRecording = true;
+            pathOwner.Exists = true;
+            pathOwner.LastVerified = DateTime.UtcNow;
+            pathOwner.Size = new FileInfo(recording.OutputPath).Length;
+            var configForLinkedFile = await _configService.GetConfigAsync();
+            var linkedParts = await _db.EventFiles
+                .Where(file => file.EventId == recording.EventId && file.Exists)
+                .Select(file => file.PartNumber)
+                .ToListAsync();
+            linkedParts.Add(pathOwner.PartNumber);
+            recording.Event.HasFile = EventPartDetector.AreAllMonitoredPartsPresent(
+                recording.Event.Sport, recording.Event.Title, recording.Event.League?.Name,
+                recording.Event.MonitoredParts, recording.Event.League?.MonitoredParts,
+                linkedParts, configForLinkedFile.EnableMultiPartEpisodes);
+            if (recording.Event.FilePath == null || recording.Event.FilePath == pathOwner.FilePath)
+            {
+                recording.Event.FilePath = pathOwner.FilePath;
+                recording.Event.FileSize = pathOwner.Size;
+                recording.Event.Quality = pathOwner.Quality;
+            }
+            recording.Status = DvrRecordingStatus.Imported;
+            recording.ImportedAt = DateTime.UtcNow;
+            recording.ErrorMessage = null;
+            recording.LastUpdated = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+            return true;
+        }
+
         // Probe the file to detect quality
         await ProbeAndUpdateRecordingQualityAsync(recording);
 
@@ -867,8 +906,12 @@ public class EventDvrService
     public async Task<int> ImportAllCompletedRecordingsAsync()
     {
         var completedRecordings = await _db.DvrRecordings
-            .Where(r => r.Status == DvrRecordingStatus.Completed)
+            .Where(r => r.Status == DvrRecordingStatus.Completed && r.ImportedAt == null)
             .Where(r => r.EventId != null)
+            .Where(r => r.OutputPath != null)
+            .Where(r => (r.ImportMode != null && r.ImportMode != "") || !_db.EventFiles.Any(file => file.EventId == r.EventId
+                && file.PartName == r.PartName && file.Exists && file.FilePath != r.OutputPath))
+            .OrderBy(r => r.Id)
             .Select(r => r.Id)
             .ToListAsync();
 
@@ -876,9 +919,14 @@ public class EventDvrService
 
         foreach (var recordingId in completedRecordings)
         {
-            if (await ImportCompletedRecordingAsync(recordingId))
+            try
             {
-                importedCount++;
+                if (await ImportCompletedRecordingAsync(recordingId))
+                    importedCount++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[EventDVR] Could not import completed recording {RecordingId}", recordingId);
             }
         }
 
