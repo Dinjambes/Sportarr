@@ -18,6 +18,12 @@ Give Sportarr its own category when SABnzbd, NZBdav, or Decypharr shares a queue
 
 Sportarr tracks each grab by the job ID returned by the client. That exact ID remains authoritative if a compatible client files the job under the wrong category. If the client replaces the ID, Sportarr can recover a single exact release-title match. It refuses partial or ambiguous title matches.
 
+## Transmission
+
+If you set a Download Directory, it must exist and be writable by Transmission. Sportarr sends it with each new torrent and uses it when monitoring the download. On Transmission 3 or newer, the Category is also applied as a torrent label. Sportarr leaves the labels on an existing duplicate torrent alone.
+
+External downloads are found by their download directory. Give Sportarr its own directory if you want downloads added outside Sportarr to appear in Activity.
+
 ## Post-import behavior
 
 Each download client has a **Post-Import Mode** controlling how files reach your library:
