@@ -27,7 +27,8 @@ public static class ExistingFileUpgradeGate
         string? releaseQuality,
         int releaseCustomFormatScore,
         QualityProfile? profile,
-        Config config)
+        Config config,
+        bool hasHigherPositivePreferredScore = false)
     {
         // Every release reaching this gate came from an indexer, so under
         // source precedence it replaces an IPTV recording before any profile
@@ -108,12 +109,9 @@ public static class ExistingFileUpgradeGate
             return $"Existing file has same or better custom format score ({existingFile.CustomFormatScore} vs {releaseCustomFormatScore})";
         }
 
-        // COSMETIC-DUPLICATE GUARD: broadcasters repost the identical release
-        // under a branded name. When the only tokens separating the new title
-        // from the existing file's original title are broadcaster words, it
-        // is the same content; only a proper/repack revision justifies
-        // replacing it.
-        if (sameQuality && !revisionUpgrade &&
+        // Broadcasters can repost the same file under a branded title.
+        // Keep it unless a configured preference favors the new feed.
+        if (sameQuality && !revisionUpgrade && !hasHigherPositivePreferredScore &&
             RssSyncService.TitlesDifferOnlyByBroadcasterBranding(existingFile.OriginalTitle, releaseTitle))
         {
             return "Same release as the existing file (title differs only by broadcaster branding)";

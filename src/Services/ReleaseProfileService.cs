@@ -128,6 +128,30 @@ public class ReleaseProfileService
         return evaluation;
     }
 
+    public bool HasHigherPositivePreferredScore(
+        string? existingTitle,
+        ReleaseSearchResult candidate,
+        List<ReleaseProfile> releaseProfiles,
+        List<int>? leagueTags)
+    {
+        if (string.IsNullOrWhiteSpace(existingTitle))
+            return false;
+
+        var existing = new ReleaseSearchResult
+        {
+            Title = existingTitle,
+            Guid = candidate.Guid,
+            DownloadUrl = candidate.DownloadUrl,
+            Indexer = candidate.Indexer,
+            IndexerId = candidate.IndexerId
+        };
+        var existingScore = EvaluateRelease(existing, releaseProfiles, leagueTags).PreferredScore;
+        var candidateEvaluation = EvaluateRelease(candidate, releaseProfiles, leagueTags);
+        return !candidateEvaluation.IsRejected &&
+            candidateEvaluation.PreferredScore > 0 &&
+            candidateEvaluation.PreferredScore > existingScore;
+    }
+
     /// <summary>
     /// Load all enabled release profiles from the database.
     /// Call this once per search operation for efficiency.

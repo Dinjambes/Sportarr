@@ -47,6 +47,7 @@ public class PendingReleaseReaperPersistenceTests
         services.AddSingleton(Mock.Of<IRemotePathMappingService>());
         services.AddScoped<DownloadClientService>();
         services.AddScoped<NotificationService>();
+        services.AddScoped<ReleaseProfileService>();
         await using var provider = services.BuildServiceProvider();
 
         try

@@ -80,9 +80,11 @@ public class PendingReleaseReaperService : BackgroundService
         var downloadClientService = scope.ServiceProvider.GetRequiredService<DownloadClientService>();
         var notificationService = scope.ServiceProvider.GetRequiredService<NotificationService>();
         var rssSyncService = scope.ServiceProvider.GetRequiredService<RssSyncService>();
+        var releaseProfileService = scope.ServiceProvider.GetRequiredService<ReleaseProfileService>();
         var configService = scope.ServiceProvider.GetRequiredService<ConfigService>();
         var config = await configService.GetConfigAsync();
         var qualityProfiles = await db.QualityProfiles.ToListAsync(cancellationToken);
+        var releaseProfiles = await releaseProfileService.LoadReleaseProfilesAsync();
 
         var now = DateTime.UtcNow;
 
@@ -198,8 +200,22 @@ public class PendingReleaseReaperService : BackgroundService
             var eligible = new List<PendingRelease>();
             foreach (var candidate in ranked)
             {
+                var preferredBroadcasterUpgrade = partFile != null &&
+                    RssSyncService.TitlesDifferOnlyByBroadcasterBranding(partFile.OriginalTitle, candidate.Title) &&
+                    releaseProfileService.HasHigherPositivePreferredScore(
+                        partFile.OriginalTitle,
+                        new ReleaseSearchResult
+                        {
+                            Title = candidate.Title,
+                            Guid = candidate.Guid,
+                            DownloadUrl = candidate.DownloadUrl,
+                            Indexer = candidate.Indexer,
+                            IndexerId = candidate.IndexerId
+                        },
+                        releaseProfiles, evt.League?.Tags);
                 var refusal = partFile == null ? null : Helpers.ExistingFileUpgradeGate.RefusalReason(
-                    partFile, candidate.Title, candidate.Quality, candidate.CustomFormatScore, profile, config);
+                    partFile, candidate.Title, candidate.Quality, candidate.CustomFormatScore, profile, config,
+                    preferredBroadcasterUpgrade);
                 if (refusal != null)
                 {
                     candidate.Status = PendingReleaseStatus.Cancelled;

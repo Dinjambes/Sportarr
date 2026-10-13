@@ -273,7 +273,8 @@ public class RssSyncService : BackgroundService
                 // Check if we should grab this release (now returns part info too)
                 using var eventDecision = await downloadClientService.EnterEventDecisionAsync(matchedEvent.Id, cancellationToken);
                 var shouldGrab = await ShouldGrabReleaseAsync(
-                    db, matchedEvent, release, config, qualityProfile, partDetector, delayProfileService, downloadClientService, cancellationToken);
+                    db, matchedEvent, release, config, qualityProfile, partDetector, delayProfileService,
+                    downloadClientService, releaseProfileService, releaseProfiles, cancellationToken);
 
                 if (!shouldGrab.Grab)
                 {
@@ -550,7 +551,8 @@ public class RssSyncService : BackgroundService
 
         using var eventDecision = await downloadClientService.EnterEventDecisionAsync(matchedEvent.Id, cancellationToken);
         var shouldGrab = await ShouldGrabReleaseAsync(
-            db, matchedEvent, release, config, qualityProfile, partDetector, delayProfileService, downloadClientService, cancellationToken);
+            db, matchedEvent, release, config, qualityProfile, partDetector, delayProfileService,
+            downloadClientService, releaseProfileService, releaseProfiles, cancellationToken);
 
         if (!shouldGrab.Grab)
         {
@@ -850,6 +852,8 @@ public class RssSyncService : BackgroundService
         EventPartDetector partDetector,
         DelayProfileService delayProfileService,
         DownloadClientService downloadClientService,
+        ReleaseProfileService releaseProfileService,
+        List<ReleaseProfile> releaseProfiles,
         CancellationToken cancellationToken)
     {
         await db.Entry(evt).ReloadAsync(cancellationToken);
@@ -1075,8 +1079,13 @@ public class RssSyncService : BackgroundService
             // lived inline here and the reaper mirrored only the score half
             // of them, so a hold released later grabbed over files this gate
             // refuses and dropped propers it lets through.
+            var preferredBroadcasterUpgrade =
+                TitlesDifferOnlyByBroadcasterBranding(existingFile.OriginalTitle, release.Title) &&
+                releaseProfileService.HasHigherPositivePreferredScore(
+                    existingFile.OriginalTitle, release, releaseProfiles, evt.League?.Tags);
             var refusal = Helpers.ExistingFileUpgradeGate.RefusalReason(
-                existingFile, release.Title, release.Quality, release.CustomFormatScore, profile, config);
+                existingFile, release.Title, release.Quality, release.CustomFormatScore, profile, config,
+                preferredBroadcasterUpgrade);
             if (refusal != null)
             {
                 return (false, refusal, releasePart);

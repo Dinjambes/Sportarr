@@ -355,6 +355,111 @@ public class RssPackAcquisitionTests(Xunit.Abstractions.ITestOutputHelper output
             (await rig.Db.PendingReleases.SingleAsync(p => p.Guid == "other-encode")).Status);
     }
 
+    [Fact]
+    public async Task PreferredBroadcasterFeedReplacesExistingFileFromPush()
+    {
+        await using var rig = await PartIdentityIntegrationHarness.CreateAsync(
+            multipart: false, title: "Alpha vs Beta", sport: "American Football",
+            leagueName: "NFL", relational: true);
+        rig.Event.HomeTeamName = "Alpha";
+        rig.Event.AwayTeamName = "Beta";
+        rig.Event.HasFile = true;
+        const string originalTitle = "NFL.2020.09.01.Alpha.vs.Beta.720p.WEB-DL.H264-Fixture";
+        rig.Db.EventFiles.Add(new EventFile
+        {
+            EventId = rig.Event.Id,
+            FilePath = "/fixture/library/alpha-beta-720p.mkv",
+            Quality = "WEBDL-720p",
+            OriginalTitle = originalTitle,
+            Exists = true
+        });
+        rig.Db.ReleaseProfiles.Add(new ReleaseProfile
+        {
+            Name = "Home feed",
+            Preferred = new List<PreferredKeyword> { new() { Key = "ESPN", Value = 100 } }
+        });
+        await rig.Db.SaveChangesAsync();
+        var release = rig.Release("ESPN." + originalTitle, suffix: "preferred-feed");
+        release.IndexerId = await rig.Db.Indexers.Select(i => i.Id).SingleAsync();
+        release.Size = 2_000_000_000;
+
+        var outcome = await rig.Services.GetRequiredService<RssSyncService>()
+            .ProcessPushedReleaseAsync(release, CancellationToken.None);
+
+        Assert.True(outcome.Grabbed, string.Join("; ", outcome.Rejections));
+        Assert.Equal(100, (await rig.Db.DownloadQueue.SingleAsync()).CustomFormatScore);
+    }
+
+    [Fact]
+    public async Task PreferredBroadcasterFeedSurvivesDelayWindow()
+    {
+        await using var rig = await CreateDelayedNflRssRigAsync();
+        var indexer = await rig.Db.Indexers.SingleAsync();
+        const string originalTitle = "NFL.2020.09.01.Alpha.vs.Beta.720p.WEB-DL.H264-Fixture";
+        rig.Event.HasFile = true;
+        rig.Db.EventFiles.Add(new EventFile
+        {
+            EventId = rig.Event.Id,
+            FilePath = "/fixture/library/alpha-beta-720p.mkv",
+            Quality = "WEBDL-720p",
+            OriginalTitle = originalTitle,
+            Exists = true
+        });
+        rig.Db.ReleaseProfiles.Add(new ReleaseProfile
+        {
+            Name = "Home feed",
+            Preferred = new List<PreferredKeyword> { new() { Key = "ESPN", Value = 100 } }
+        });
+        AddDelayedNflCandidate(rig, indexer, "720p", "preferred-feed",
+            DateTime.UtcNow.AddHours(-2), DateTime.UtcNow.AddMinutes(-1));
+        var pending = rig.Db.PendingReleases.Local.Single(p => p.Guid == "preferred-feed");
+        pending.Title = "ESPN." + originalTitle;
+        pending.CustomFormatScore = 100;
+        await rig.Db.SaveChangesAsync();
+
+        await RunDelayedNflReaperAsync(rig);
+
+        var result = await rig.Db.PendingReleases.SingleAsync();
+        Assert.True(result.Status == PendingReleaseStatus.Released, result.Reason);
+        Assert.Equal(100, (await rig.Db.DownloadQueue.SingleAsync()).CustomFormatScore);
+    }
+
+    [Fact]
+    public async Task DelayedPreferredFeedStillObeysIgnoredKeyword()
+    {
+        await using var rig = await CreateDelayedNflRssRigAsync();
+        var indexer = await rig.Db.Indexers.SingleAsync();
+        const string originalTitle = "NFL.2020.09.01.Alpha.vs.Beta.720p.WEB-DL.H264-Fixture";
+        rig.Event.HasFile = true;
+        rig.Db.EventFiles.Add(new EventFile
+        {
+            EventId = rig.Event.Id,
+            FilePath = "/fixture/library/alpha-beta-720p.mkv",
+            Quality = "WEBDL-720p",
+            OriginalTitle = originalTitle,
+            Exists = true
+        });
+        rig.Db.ReleaseProfiles.AddRange(
+            new ReleaseProfile
+            {
+                Name = "Home feed",
+                Preferred = new List<PreferredKeyword> { new() { Key = "ESPN", Value = 100 } }
+            },
+            new ReleaseProfile { Name = "Exclude feed", Ignored = "ESPN" });
+        AddDelayedNflCandidate(rig, indexer, "720p", "excluded-feed",
+            DateTime.UtcNow.AddHours(-2), DateTime.UtcNow.AddMinutes(-1));
+        var pending = rig.Db.PendingReleases.Local.Single(p => p.Guid == "excluded-feed");
+        pending.Title = "ESPN." + originalTitle;
+        pending.CustomFormatScore = 100;
+        await rig.Db.SaveChangesAsync();
+
+        await RunDelayedNflReaperAsync(rig);
+
+        Assert.Equal(PendingReleaseStatus.Cancelled,
+            (await rig.Db.PendingReleases.SingleAsync()).Status);
+        Assert.Empty(await rig.Db.DownloadQueue.ToListAsync());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

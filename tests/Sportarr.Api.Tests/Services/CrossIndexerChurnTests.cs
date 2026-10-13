@@ -99,6 +99,8 @@ public class CrossIndexerChurnTests
                 rig.Services.GetRequiredService<EventPartDetector>(),
                 rig.Services.GetRequiredService<DelayProfileService>(),
                 rig.Services.GetRequiredService<DownloadClientService>(),
+                rig.Services.GetRequiredService<ReleaseProfileService>(),
+                new List<ReleaseProfile>(),
                 CancellationToken.None
             })!;
 
